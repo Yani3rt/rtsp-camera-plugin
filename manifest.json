@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "yani.camera",
+  "name": "RTSP Camera",
+  "version": "1.0.0",
+  "author": "Yani",
+  "description": "A local network camera viewer with connection settings.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "Widget.qml"},
+  "barWidget": {
+    "displayName": "Camera",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
