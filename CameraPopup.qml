@@ -51,8 +51,17 @@ PanelWindow {
   property bool centerOnBar: false
   property bool open: false
   property bool pinned: false
+  property point pinnedOrigin: Qt.point(0, 0)
+  property var savedPosition: null
+  signal positionMoved(real x, real y)
+  readonly property bool containsMouse: cardHover.hovered
+  property real chromeOpacity: !pinned || containsMouse ? 1 : 0
+  Behavior on chromeOpacity {
+    NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+  }
 
   onPinnedChanged: {
+    if (pinned) pinnedOrigin = savedPosition ? boundedOrigin(savedPosition) : anchoredOrigin
     if (!bar || !open) return
     if (pinned) {
       if (bar.activePopout === coordinatorKey) bar.releasePopout(coordinatorKey)
@@ -206,7 +215,23 @@ PanelWindow {
   // centering the card under the icon.
   readonly property real barW: anchorWindow ? anchorWindow.width : screenW
   readonly property real barH: anchorWindow ? anchorWindow.height : 0
-  readonly property point cardOrigin: {
+  readonly property point cardOrigin: pinned ? boundedOrigin(pinnedOrigin) : anchoredOrigin
+
+  function boundedOrigin(point) {
+    return Qt.point(
+      Math.round(Math.max(margin, Math.min(point.x, screenW - contentWidth - margin))),
+      Math.round(Math.max(margin, Math.min(point.y, screenH - contentHeight - margin))))
+  }
+
+  function movePinned(x, y) {
+    if (open && pinned) {
+      pinnedOrigin = boundedOrigin(Qt.point(x, y))
+      savedPosition = Qt.point(pinnedOrigin.x, pinnedOrigin.y)
+      positionMoved(pinnedOrigin.x, pinnedOrigin.y)
+    }
+  }
+
+  readonly property point anchoredOrigin: {
     if (!anchorItem || !bar) return Qt.point(margin, margin)
     var x = 0, y = 0
     if (centerOnBar && (barPos === "top" || barPos === "bottom")) {
@@ -391,17 +416,26 @@ PanelWindow {
 
   // --- card ----------------------------------------------------------------
 
-  BorderSurface {
+  Item {
     id: card
     x: root.cardOrigin.x
     y: root.cardOrigin.y
     width: root.contentWidth
     height: root.contentHeight
-    color: Color.popups.background
-    borderSpec: root.borderSpec
-    padding: root.padding
-    radius: Style.cornerRadius
     opacity: root.open || root.popoutSwitching ? 1.0 : 0
+
+    HoverHandler { id: cardHover }
+
+    // Fade only the surrounding surface; content keeps its own opacity.
+    BorderSurface {
+      id: cardBackground
+      anchors.fill: parent
+      color: Color.popups.background
+      borderSpec: root.borderSpec
+      padding: root.padding
+      radius: Style.cornerRadius
+      opacity: root.chromeOpacity
+    }
 
     Behavior on opacity {
       enabled: !root.popoutSwitching && !root.popoutSwitchClosing
@@ -418,10 +452,10 @@ PanelWindow {
     Item {
       id: contentHolder
       anchors.fill: parent
-      anchors.topMargin: card.contentTopInset
-      anchors.rightMargin: card.contentRightInset
-      anchors.bottomMargin: card.contentBottomInset
-      anchors.leftMargin: card.contentLeftInset
+      anchors.topMargin: cardBackground.contentTopInset
+      anchors.rightMargin: cardBackground.contentRightInset
+      anchors.bottomMargin: cardBackground.contentBottomInset
+      anchors.leftMargin: cardBackground.contentLeftInset
       opacity: root.popoutSwitching ? (root.open ? 1.0 : 0) : 1.0
 
       Behavior on opacity {
