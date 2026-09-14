@@ -1,35 +1,33 @@
 # RTSP Camera for Omarchy
 
-View your RTSP cameras from the Omarchy bar, with live theme previews, pixel
-effects, optional terminal overlays, and a pinnable, resizable viewer.
+View your RTSP cameras from the Omarchy bar in Omarchy Style, with live theme 
+preview configurations, cool effects, overlays, and a pinnable, resizable viewer
+that you can move around your screen and pin to stay on top of your other apps.
 
 ![RTSP Camera showing Omarchy tint and the Hackerman overlay](preview.png)
 
-Preview uses a generated video test pattern; no camera footage or credentials.
-
 Surveillance-camera icon in the Omarchy bar. Click to view; Config in the upper right
 opens the camera name, RTSP address, username, and masked password form. Save & connect
-persists that camera and opens its stream. Cancel discards edits. Escape,
-the close button, clicking outside, or clicking the bar icon closes the popup.
+persists that camera and opens its stream. Escape, the close button, clicking outside,
+or clicking the bar icon closes the popup.
 
 The top row has a camera dropdown alongside the pin and Config controls.
 Select a name to switch feeds. Open **Config** and use **+** beside the camera
 name field to add another named camera.
 Selecting a camera in Config loads its settings without leaving the form.
 Closing and reopening returns to the selected camera's main screen, discarding
-unsaved Config edits. Setup is shown when no camera is configured.
-The last selection is remembered and shared across monitor widgets.
-Config edits the selected camera, including its name; Delete
-requires a second click to confirm. Names must be unique (up to 64 characters),
-with up to 32 saved cameras. Switching cameras mutes audio and resets reconnect
-attempts. An existing single-camera setup appears as **Camera 1** and is migrated
-without changing its connection details when profiles are first saved.
+unsaved Config edits. 
+
+The last selection is remembered and shared across monitor widgets. Names must be unique 
+(up to 64 characters), with up to 32 saved cameras. Switching cameras mutes audio and resets reconnect
+attempts. 
 
 Drag either bottom corner to resize the viewer; double-click a corner to
 reset its size. Dimensions are saved in `~/.config/rtsp-camera/view.json`
 (or under `$XDG_CONFIG_HOME`) and shared across monitors. They survive closing
 and shell restarts, and fit within the current monitor. Video retains its
 aspect ratio while resizing.
+
 Turn on the square pin switch to keep the camera above other windows while using
 your desktop. Turning it off restores outside-click dismissal. Close or Escape still closes
 the pinned viewer. While pinned, drag the empty header space to move the viewer anywhere
@@ -41,6 +39,7 @@ The pin switch itself resets when the viewer is closed.
 While pinned, the surrounding panel and header fade out when the pointer leaves
 the viewer, and fade back in on hover. The camera feed and its overlay controls
 remain visible, with no change to the feed's size or position.
+
 Streaming stops while closed or editing settings. Audio starts muted. In every
 video style and overlay, click the top-right waveform to mute or unmute; its slash
 indicates muted audio. The waveform button also supports keyboard focus and Space.
@@ -50,6 +49,7 @@ streams, and five seconds without video frames trigger automatic reconnect.
 Retries wait 2, 4, 8, 16, then at most 30 seconds between attempts; each connection
 has a 20-second timeout. Receiving video resets the delay. Closing the viewer or
 opening settings cancels retries.
+
 Connection status is shown by the corner borders and terminal readouts. The audio
 waveform and theme button have transparent backgrounds and themed interaction
 states. Controls overlay the feed.
