@@ -20,7 +20,9 @@ Before submitting:
    check all five statements only when they are true.
 
 Category: **Widgets**. Tags: **bar**, **media**, **quickshell**.
-The preview shows the actual plugin with generated video, without private footage.
+The README uses a looping GIF and links to the MP4 recording in `docs/assets/`.
+The marketplace uses `preview.png`, a still from the same recording. These show
+the owner's pixelated camera feed, explicitly approved for public use.
 No install script or extra setup script is required; users configure their camera
 through the plugin after installation.
 

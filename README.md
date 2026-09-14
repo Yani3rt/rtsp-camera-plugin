@@ -4,7 +4,10 @@ View your RTSP cameras from the Omarchy bar in Omarchy Style, with live theme
 preview configurations, cool effects, overlays, and a pinnable, resizable viewer
 that you can move around your screen and pin to stay on top of your other apps.
 
-![RTSP Camera showing Omarchy tint and the Hackerman overlay](preview.png)
+[![RTSP Camera with a pixelated video style and the Hackerman overlay](docs/assets/preview.gif)](docs/assets/preview.mp4)
+
+Pixelated camera feed with the Hackerman overlay.
+[Watch the MP4 recording](docs/assets/preview.mp4).
 
 Surveillance-camera icon in the Omarchy bar. Click to view; Config in the upper right
 opens the camera name, RTSP address, username, and masked password form. Save & connect
@@ -217,7 +220,7 @@ there. Installing the plugin does not overwrite existing camera settings.
 ## License
 
 [MIT](LICENSE). The adapted Omarchy popup retains its original attribution in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The preview is a screenshot of
-the plugin playing an FFmpeg-generated test pattern.
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The preview recording and still
+image show the owner's pixelated camera feed, shared with permission.
 
 Marketplace submission steps and a prepared listing are in [PUBLISHING.md](PUBLISHING.md).

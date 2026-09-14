@@ -33,7 +33,8 @@ the helper on stdin, and used by Qt Multimedia to connect to the selected camera
 Removal retains that configuration; the README explains how to erase it.
 
 MIT licensed, with upstream Omarchy popup attribution retained. The root preview
-shows the plugin playing a generated test pattern and contains no camera footage.
+is a still from the README recording showing the owner's pixelated camera feed,
+explicitly approved by the owner for public use.
 The animated waveform is decorative and does not analyze audio.
 
 ### Submission checklist
