@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "id": "yani.camera",
   "name": "RTSP Camera",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "author": "Yani",
-  "description": "A local network camera viewer with connection settings.",
+  "license": "MIT",
+  "description": "View RTSP cameras from the bar with Omarchy colors, pixel effects, animated overlays, and audio controls.",
   "kinds": ["bar-widget"],
   "entryPoints": {"barWidget": "Widget.qml"},
   "barWidget": {

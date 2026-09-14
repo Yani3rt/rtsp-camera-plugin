@@ -1,5 +1,12 @@
 # RTSP Camera for Omarchy
 
+View your RTSP cameras from the Omarchy bar, with live theme previews, pixel
+effects, optional terminal overlays, and a pinnable, resizable viewer.
+
+![RTSP Camera showing Omarchy tint and the Hackerman overlay](preview.png)
+
+Preview uses a generated video test pattern; no camera footage or credentials.
+
 Surveillance-camera icon in the Omarchy bar. Click to view; Config in the upper right
 opens the camera name, RTSP address, username, and masked password form. Save & connect
 persists that camera and opens its stream. Cancel discards edits. Escape,
@@ -47,9 +54,20 @@ Connection status is shown by the corner borders and terminal readouts. The audi
 waveform and theme button have transparent backgrounds and themed interaction
 states. Controls overlay the feed.
 
-Requires Omarchy Quickshell, Qt 6 Multimedia, and Python 3 (no pip packages).
-Video playback uses Qt Multimedia's installed backend:
-https://doc.qt.io/qt-6/qtmultimedia-index.html
+## Requirements
+
+- Omarchy 4 with its Quickshell plugin system and bundled shell components.
+- Qt 6 Multimedia and a playback backend, such as `qt6-multimedia-ffmpeg`.
+- Python 3; no pip packages are needed.
+- An accessible RTSP/RTSPS camera and its stream path. Codec support depends on
+  the installed [Qt Multimedia backend](https://doc.qt.io/qt-6/qtmultimedia-index.html).
+
+Tested on Omarchy 4.0.3, Quickshell 0.3.1, and Qt 6.11.2. Icons use Omarchy's
+configured Nerd Font. The plugin runs in the existing shell process and invokes
+its bundled Python helper for settings; it installs no background service,
+downloads no runtime code, and needs no root access. Dependencies must already
+be installed. FFmpeg, QtTest, and Qt Shader Tools are development tools only
+(the FFmpeg playback backend is still needed when chosen for playback).
 
 ## Video appearance
 
@@ -113,19 +131,30 @@ decoding cost. A working Qt Quick GPU backend is required for filtered styles.
 
 ## Install
 
-Copy `manifest.json`, `Widget.qml`, `CameraPanel.qml`, `CameraPopup.qml`, `AudioWaveform.qml`, `VideoEffect.qml`, `VideoOverlay.qml`, `TerminalOverlay.qml`,
-`config.py`, and the `shaders/` directory into `~/.config/omarchy/plugins/yani.camera/`,
-then run:
+Install and enable from the repository:
 
 ```sh
-omarchy-shell shell rescanPlugins
-omarchy plugin enable yani.camera --section right
+omarchy plugin add https://github.com/Yani3rt/rtsp-camera-plugin.git --enable
 ```
 
-First click opens settings. The suggested address is
-`rtsp://10.0.0.233/ch2`; verify the exact stream path with your camera.
-A custom port must be numeric, for example `rtsp://10.0.0.233:554/ch2`.
-Enter credentials in the separate fields, not in the URL.
+The camera icon appears in the right bar section. Click it to open settings,
+enter a camera name and its address, then choose **Save & connect**. For example,
+`rtsp://192.0.2.10:554/stream` illustrates the format; replace the IP and path
+with your camera's values. Enter credentials in the separate fields, not in
+the URL. The first configured feed uses the Omarchy video style and Default overlay.
+
+To update a git-managed installation:
+
+```sh
+omarchy plugin update yani.camera
+```
+
+For local development, copy the repository into
+`~/.config/omarchy/plugins/yani.camera/`, including the compiled `shaders/`
+assets and license notices, then run `omarchy-shell shell rescanPlugins` and
+`omarchy plugin enable yani.camera --section right`. If an older manual copy
+already occupies that directory, move it to a backup outside `plugins/`
+before installing the git-managed version.
 
 Settings live at `$XDG_CONFIG_HOME/rtsp-camera/config.json` (normally
 `~/.config/rtsp-camera/config.json`). The password is stored as plaintext
@@ -139,6 +168,7 @@ encrypted; use RTSPS if supported by the camera.
 ## Verify
 
 ```sh
+omarchy plugin validate .
 python3 -m unittest discover -s . -p 'test_*.py'
 ```
 
@@ -166,10 +196,28 @@ After editing `shaders/video.frag`, rebuild it with Qt Shader Tools:
   -o shaders/video.frag.qsb shaders/video.frag
 ```
 
-## Disable
+## Disable or remove
 
 ```sh
 omarchy plugin disable yani.camera
 ```
 
-The saved connection is retained when the plugin is disabled.
+To remove the plugin and its bar entry:
+
+```sh
+omarchy plugin remove yani.camera
+```
+
+Omarchy asks for confirmation. Disabling or removing the plugin retains your
+camera profiles, credentials, appearance, and window settings in
+`${XDG_CONFIG_HOME:-$HOME/.config}/rtsp-camera/`. To erase those as well, delete
+that directory yourself after removal. No other application settings are stored
+there. Installing the plugin does not overwrite existing camera settings.
+
+## License
+
+[MIT](LICENSE). The adapted Omarchy popup retains its original attribution in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The preview is a screenshot of
+the plugin playing an FFmpeg-generated test pattern.
+
+Marketplace submission steps and a prepared listing are in [PUBLISHING.md](PUBLISHING.md).

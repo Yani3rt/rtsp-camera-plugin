@@ -5,6 +5,7 @@ import qs.Commons
 import qs.Ui
 
 // Plugin-local adaptation of Omarchy KeyboardPanel with non-modal pinning.
+// Copyright (c) David Heinemeier Hansson. MIT license; see THIRD_PARTY_NOTICES.md.
 
 // Layer-shell popup attached to a bar widget icon, designed for
 // click-driven AND keyboard-driven panels (e.g. SUPER+CTRL+W summon).

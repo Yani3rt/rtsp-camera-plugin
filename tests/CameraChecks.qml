@@ -212,6 +212,9 @@ ShellRoot {
             eventually(function() { return state().live }, 5000)
             var popup = find(panel, function(i) { return i.cardOrigin !== undefined })
             var content = popup.contentItem[0]
+            // Give QtTest a window for key events even when the compositor has
+            // not focused this pinned viewer after a synthetic mouse click.
+            parent = content
             // Keep the synthetic interaction sequence safe from outside-click dismissal.
             // Explicit close/reopen and pin behavior are checked separately below.
             function click(item) { panel.pinned = true; wait(80); mouseClick(item); wait(80) }

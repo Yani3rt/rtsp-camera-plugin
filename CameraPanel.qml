@@ -42,7 +42,7 @@ Panel {
     property var pendingPosition: null
     property int retryAttempt: 0
     property bool changingPlayback: false
-    property var config: ({url: "rtsp://10.0.0.233/ch2", username: "", password: ""})
+    property var config: ({url: "rtsp://", username: "", password: ""})
     readonly property color foreground: bar ? bar.foreground : Color.foreground
     readonly property string configPath: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/rtsp-camera/config.json"
     readonly property bool streaming: opened && !configuring && configured
@@ -999,7 +999,7 @@ Panel {
                                 objectName: "cameraAddress"
                                 Layout.fillWidth: true
                                 text: root.config.url
-                                placeholderText: "rtsp://10.0.0.233:554/ch2"
+                                placeholderText: "rtsp://camera-ip:554/stream"
                                 selectByMouse: true
                                 Accessible.name: "RTSP address"
                             }
