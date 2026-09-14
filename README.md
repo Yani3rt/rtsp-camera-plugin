@@ -9,6 +9,8 @@ The top row has a camera dropdown alongside the pin and Config controls.
 Select a name to switch feeds. Open **Config** and use **+** beside the camera
 name field to add another named camera.
 Selecting a camera in Config loads its settings without leaving the form.
+Closing and reopening returns to the selected camera's main screen, discarding
+unsaved Config edits. Setup is shown when no camera is configured.
 The last selection is remembered and shared across monitor widgets.
 Config edits the selected camera, including its name; Delete
 requires a second click to confirm. Names must be unique (up to 64 characters),
@@ -32,26 +34,88 @@ The pin switch itself resets when the viewer is closed.
 While pinned, the surrounding panel and header fade out when the pointer leaves
 the viewer, and fade back in on hover. The camera feed and its overlay controls
 remain visible, with no change to the feed's size or position.
-Streaming stops while closed or editing settings. Audio starts muted; click
-the speaker icon at the bottom-right of the feed to unmute or mute. Closing the popup or opening settings
-mutes it again. Streams without an audio track disable the speaker button. The
-reconnect icon beside it retries immediately. Failed connections, interrupted
+Streaming stops while closed or editing settings. Audio starts muted. In every
+video style and overlay, click the top-right waveform to mute or unmute; its slash
+indicates muted audio. The waveform button also supports keyboard focus and Space.
+Closing the popup or opening settings mutes audio again. Streams without an audio track disable the
+audio control. The bottom-right palette icon opens the video theme preview. Failed connections, interrupted
 streams, and five seconds without video frames trigger automatic reconnect.
 Retries wait 2, 4, 8, 16, then at most 30 seconds between attempts; each connection
 has a 20-second timeout. Receiving video resets the delay. Closing the viewer or
 opening settings cancels retries.
-The bottom-left status pill is green (LIVE) while frames are arriving and red
-(OFFLINE) while disconnected, connecting, or after five seconds without a video
-frame. Controls overlay the feed.
+Connection status is shown by the corner borders and terminal readouts. The audio
+waveform and theme button have transparent backgrounds and themed interaction
+states. Controls overlay the feed.
 
 Requires Omarchy Quickshell, Qt 6 Multimedia, and Python 3 (no pip packages).
 Video playback uses Qt Multimedia's installed backend:
 https://doc.qt.io/qt-6/qtmultimedia-index.html
 
+## Video appearance
+
+Click the **palette icon** at the bottom-right of the feed to open the theme
+section below the video. Choose **Video style** and adjust its sliders while the
+feed keeps playing; changes preview immediately in this viewer:
+
+- **Original**: unfiltered video, with no effect texture allocated.
+- **Omarchy** (first-run default): gently blends the image into the current Omarchy palette.
+- **Pixel**: crisp blocks with original colors.
+- **Omarchy Pixel**: combines the pixel look with the theme tint.
+
+The themed styles show a **Tint strength** slider (default 35%). Zero preserves
+the original colors; 100% fully maps the image into the theme palette. Theme
+changes update the filter automatically. Text and video controls remain sharp.
+
+**Pixel** and **Omarchy Pixel** show a **Pixel size** slider from 1 to 16 px.
+Higher values make larger blocks and a stronger pixelated look. The default is
+3 px, including for settings saved before this slider was added. Click **Apply**
+to save the size for every camera and monitor.
+
+Use **Overlay** to add a theme-colored camera display to any video style:
+
+- **Default**: corner borders and the waveform mute button.
+- **Coder**: Default plus right-side activity dots pulsing up and down and a lower
+  terminal readout with stream status and a received-frame counter.
+- **Hackerman**: Coder plus scanlines, a smooth scanning band sweeping down and back up
+  every six seconds, a top terminal header, and a blinking block cursor.
+  The top header is transparent. Coder and Hackerman show their lower console in
+  larger viewers, beside the theme button, with a background at 39% opacity.
+
+Corner borders are red while offline or connecting and return to the theme accent
+when video frames arrive. They remain visible even before the first frame.
+Existing saved video styles are preserved. Older overlay choices migrate from
+Off to Default, Sci-fi HUD to Coder, and Hacker terminal to Hackerman.
+
+Overlays preview and save with the other appearance settings. They fit the video
+image, leaving letterboxing alone, and sit behind playback controls. They use
+bounded geometry with no extra video capture texture or per-frame Python work.
+The video border follows the theme accent. Playback controls stay inside the video
+when resizing, inset from overlay corners, with transparent backgrounds.
+The scan band uses a native looping animation. Coder and Hackerman share
+one 8 Hz decoration clock and sample the frame counter once per second. The universal
+waveform button has its own 8 Hz clock; it is simulated and never analyzes audio.
+The Hackerman sweep pauses in place while offline and resumes when video returns.
+Other decorations continue while visible. Hiding the overlay stops its animations,
+and closing the viewer releases it. Default's corner borders need no animation clock.
+
+Appearance applies to every camera and monitor and is saved separately in
+`~/.config/rtsp-camera/appearance.json` (or under `$XDG_CONFIG_HOME`). **Apply** saves
+the preview and completely hides the theme section, returning the space to the
+video. Click the palette icon again to reopen it with the saved values. Dismissing
+the section with that icon, closing the viewer, or opening camera **Config** discards
+unapplied changes. Other monitors see only the applied settings. Theme controls no
+longer appear in Config. Closing the viewer or opening Config unloads the effect;
+opening the theme section keeps playback and audio running.
+
+Effects use one GPU capture texture and one shader, with no Python frame processing
+or transcoding. They add rendering work and video memory, and do not reduce stream
+decoding cost. A working Qt Quick GPU backend is required for filtered styles.
+
 ## Install
 
-Copy `manifest.json`, `Widget.qml`, `CameraPanel.qml`, `CameraPopup.qml`, and `config.py` into
-`~/.config/omarchy/plugins/yani.camera/`, then run:
+Copy `manifest.json`, `Widget.qml`, `CameraPanel.qml`, `CameraPopup.qml`, `AudioWaveform.qml`, `VideoEffect.qml`, `VideoOverlay.qml`, `TerminalOverlay.qml`,
+`config.py`, and the `shaders/` directory into `~/.config/omarchy/plugins/yani.camera/`,
+then run:
 
 ```sh
 omarchy-shell shell rescanPlugins
@@ -87,7 +151,20 @@ python3 tests/run_qml_checks.py
 ```
 
 For layout-only changes, use `python3 tests/run_qml_checks.py --ui-only` to skip
-the playback recovery checks.
+the playback recovery checks. This still checks rendered effect pixels, live palette
+updates, appearance persistence, and the settings controls.
+
+`python3 tests/run_qml_checks.py --benchmark` compares process CPU usage and received
+frame rate for all four styles using a generated 320×240, 10 fps clip. It is a small
+local comparison, not a GPU benchmark or a guarantee for higher-resolution cameras.
+
+The compiled Qt 6 shader is included, so installation needs no shader compiler.
+After editing `shaders/video.frag`, rebuild it with Qt Shader Tools:
+
+```sh
+/usr/lib/qt6/bin/qsb --glsl '100 es,120,150' --hlsl 50 --msl 12 \
+  -o shaders/video.frag.qsb shaders/video.frag
+```
 
 ## Disable
 

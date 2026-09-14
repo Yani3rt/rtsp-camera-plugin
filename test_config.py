@@ -9,10 +9,55 @@ import tempfile
 import unittest
 
 from config import save, validate, validate_size, validate_position, position_filename
-from config import normalize_library, update_library
+from config import normalize_library, update_library, validate_appearance
 
 
 class SettingsTests(unittest.TestCase):
+    def test_overlay_defaults_and_validates_choices(self):
+        old = dict(style="original", strength=35, pixelSize=3)
+        self.assertEqual(validate_appearance(old), dict(old, overlay="default"))
+        for overlay in ("default", "coder", "hacker"):
+            self.assertEqual(validate_appearance(dict(old, overlay=overlay)), dict(old, overlay=overlay))
+        for old_overlay, new_overlay in (("off", "default"), ("hud", "coder"), ("terminal", "hacker")):
+            self.assertEqual(validate_appearance(dict(old, overlay=old_overlay)), dict(old, overlay=new_overlay))
+        for overlay in (None, [], 1, "unknown"):
+            with self.subTest(overlay=overlay), self.assertRaises(ValueError):
+                validate_appearance(dict(old, overlay=overlay))
+
+    def test_pixel_size_defaults_for_old_settings_and_accepts_full_range(self):
+        self.assertEqual(validate_appearance(dict(style="pixel", strength=35)),
+                         dict(style="pixel", strength=35, pixelSize=3, overlay="default"))
+        for size in (1, 8, 16):
+            data = dict(style="theme-pixel", strength=60, pixelSize=size, overlay="default")
+            self.assertEqual(validate_appearance(data), data)
+
+    def test_pixel_size_rejects_invalid_values(self):
+        for value in (None, True, 0, -1, 17, 3.5, "8", float("nan")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_appearance(dict(style="pixel", strength=35, pixelSize=value))
+
+    def test_appearance_save_is_separate_and_invalid_edits_preserve_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "rtsp-camera"
+            credentials = dict(url="rtsp://camera/live", username="user", password="secret")
+            save(credentials, directory)
+            def run(data):
+                return subprocess.run([sys.executable, str(Path(__file__).with_name("config.py")), "--appearance"],
+                                      input=json.dumps(data) + "\n", text=True, capture_output=True,
+                                      env=dict(os.environ, XDG_CONFIG_HOME=temporary))
+            for style in ("original", "theme", "pixel", "theme-pixel"):
+                data = dict(style=style, strength=35, pixelSize=8, overlay="coder")
+                result = run(data)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(json.loads((directory / "appearance.json").read_text()), data)
+                self.assertEqual(json.loads((directory / "config.json").read_text()), credentials)
+            before = (directory / "appearance.json").read_bytes()
+            for data in (None, {}, dict(style="unknown", strength=35), dict(style=[], strength=35),
+                         *[dict(style="theme", strength=x) for x in (True, -1, 101, "35", float("nan"))]):
+                with self.subTest(data=data):
+                    self.assertNotEqual(run(data).returncode, 0)
+                    self.assertEqual((directory / "appearance.json").read_bytes(), before)
+
     def test_helper_cli_routes_profiles_size_and_position(self):
         with tempfile.TemporaryDirectory() as temporary:
             environment = dict(os.environ, XDG_CONFIG_HOME=temporary)

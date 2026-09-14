@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "yani.camera",
   "name": "RTSP Camera",
-  "version": "1.0.0",
+  "version": "1.6.3",
   "author": "Yani",
   "description": "A local network camera viewer with connection settings.",
   "kinds": ["bar-widget"],

@@ -31,6 +31,14 @@ Panel {
     property bool sizeDirty: false
     property string sizeSaveError: ""
     property string positionSaveError: ""
+    property string videoStyle: "theme"
+    property int tintStrength: 35
+    property int pixelSize: 3
+    property string overlayStyle: "default"
+    readonly property var overlayStyles: ["default", "coder", "hacker"]
+    property string appearanceMessage: ""
+    property bool editingAppearance: false
+    readonly property var videoStyles: ["original", "theme", "pixel", "theme-pixel"]
     property var pendingPosition: null
     property int retryAttempt: 0
     property bool changingPlayback: false
@@ -42,6 +50,7 @@ Panel {
         && player.playbackState === MediaPlayer.PlayingState
 
     function editSettings(newCamera) {
+        editingAppearance = false
         editingCameraId = newCamera === true ? "" : selectedCameraId
         cameraName.text = newCamera === true ? "" : selectedCameraIndex >= 0 ? cameras[selectedCameraIndex].name : "Camera 1"
         address.text = newCamera === true ? "rtsp://" : config.url
@@ -52,6 +61,20 @@ Panel {
         configuring = true
         cameraName.forceActiveFocus()
     }
+    function toggleAppearance() {
+        if (appearanceWriter.running) return
+        if (editingAppearance) {
+            editingAppearance = false
+            return
+        }
+        videoStyleChooser.currentIndex = videoStyles.indexOf(videoStyle)
+        tintSlider.value = tintStrength
+        pixelSlider.value = pixelSize
+        overlayChooser.currentIndex = overlayStyles.indexOf(overlayStyle)
+        appearanceMessage = ""
+        editingAppearance = true
+    }
+    onConfiguringChanged: if (configuring) editingAppearance = false
     function applyLibrary(data) {
         // Existing single-camera settings migrate when first edited or selected.
         if (!Array.isArray(data.cameras)) {
@@ -187,15 +210,67 @@ Panel {
     }
     onOpenedChanged: {
         if (!opened) {
+            editingAppearance = false
+            writer.stayInSettings = false
             pinned = false
             sizeSaveTimer.stop()
             saveViewerSize()
             positionSaveTimer.stop()
             saveViewerPosition()
         }
-        if (opened && configuring) editSettings()
+        if (opened) {
+            configuring = !configured
+            if (configuring) editSettings()
+        }
     }
 
+    FileView {
+        id: appearanceFile
+        path: root.configPath.replace(/config\.json$/, "appearance.json")
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: {
+            try {
+                var saved = JSON.parse(text())
+                var savedPixelSize = saved.pixelSize === undefined ? 3 : saved.pixelSize
+                var savedOverlay = saved.overlay === undefined ? "default" : saved.overlay
+                if (savedOverlay === "off") savedOverlay = "default"
+                else if (savedOverlay === "hud") savedOverlay = "coder"
+                else if (savedOverlay === "terminal") savedOverlay = "hacker"
+                if (root.videoStyles.indexOf(saved.style) < 0 || typeof saved.strength !== "number"
+                    || !Number.isInteger(saved.strength) || saved.strength < 0 || saved.strength > 100
+                    || !Number.isInteger(savedPixelSize) || savedPixelSize < 1 || savedPixelSize > 16
+                    || root.overlayStyles.indexOf(savedOverlay) < 0) return
+                root.videoStyle = saved.style
+                root.tintStrength = saved.strength
+                root.pixelSize = savedPixelSize
+                root.overlayStyle = savedOverlay
+            } catch (error) { /* Missing or invalid appearance keeps the default. */ }
+        }
+    }
+    Process {
+        id: appearanceWriter
+        property string pending: ""
+        command: ["python3", Qt.resolvedUrl("config.py").toString().replace(/^file:\/\//, ""), "--appearance"]
+        stdinEnabled: true
+        onStarted: write(pending + "\n")
+        onExited: function(code) {
+            if (code !== 0) {
+                root.appearanceMessage = "Could not save video style. Try again."
+                return
+            }
+            // Commit the exact submitted preview before hiding the editor.
+            var saved = JSON.parse(pending)
+            root.videoStyle = saved.style
+            root.tintStrength = saved.strength
+            root.pixelSize = saved.pixelSize
+            root.overlayStyle = saved.overlay
+            root.appearanceMessage = ""
+            root.editingAppearance = false
+            appearanceFile.reload()
+        }
+    }
     FileView {
         id: positionFile
         readonly property string monitorName: popup.screen ? popup.screen.name : ""
@@ -551,92 +626,337 @@ Panel {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     currentIndex: root.configuring ? 1 : 0
-                    Rectangle {
-                        color: "#080b10"
-                        border.width: 1
-                        border.color: root.foreground
-                        clip: true
-                        VideoOutput {
-                            id: video
-                            anchors.fill: parent
-                            anchors.margins: 1
-                            fillMode: VideoOutput.PreserveAspectFit
-                        }
-                        Label {
-                            anchors.centerIn: parent
-                            width: parent.width - 48
-                            text: root.playbackMessage
-                            visible: text !== ""
-                            color: "white"
-                            wrapMode: Text.WordWrap
-                            horizontalAlignment: Text.AlignHCenter
-                            padding: 12
-                            background: Rectangle { color: "#dd080b10"; radius: 8 }
-                        }
-                        // Keep controls readable over both light and dark video.
+                    ColumnLayout {
+                        id: viewerPage
+                        spacing: 8
                         Rectangle {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.margins: 1
-                            height: 88
-                            gradient: Gradient {
-                                GradientStop { position: 0; color: "#00000000" }
-                                GradientStop { position: 1; color: "#b3000000" }
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: 120
+                            color: "#080b10"
+                            border.width: 1
+                            border.color: Color.accent
+                            clip: true
+                            VideoOutput {
+                                id: video
+                                anchors.fill: parent
+                                anchors.margins: 1
+                                fillMode: VideoOutput.PreserveAspectFit
                             }
-                        }
-                        Label {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: feedControls.top
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            anchors.bottomMargin: 6
-                            text: root.message || root.sizeSaveError || root.positionSaveError
-                            visible: text !== ""
-                            color: "#ffd2d2"
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 12
-                        }
-                        RowLayout {
-                            id: feedControls
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.margins: 12
-                            spacing: 8
-                            Label {
-                                text: root.live ? "LIVE" : "OFFLINE"
-                                Accessible.name: root.live ? "Camera live" : "Camera offline"
-                                color: "white"
-                                font.pixelSize: 11
-                                font.bold: true
-                                font.letterSpacing: 0.8
-                                leftPadding: 12
-                                rightPadding: 12
-                                topPadding: 6
-                                bottomPadding: 6
-                                background: Rectangle {
-                                    radius: height / 2
-                                    color: root.live ? "#176b45" : "#b42332"
+                            VideoEffect {
+                                objectName: "videoEffect"
+                                anchors.fill: video
+                                sourceItem: video
+                                active: root.streaming
+                                style: root.editingAppearance ? root.videoStyles[videoStyleChooser.currentIndex] : root.videoStyle
+                                strength: (root.editingAppearance ? tintSlider.value : root.tintStrength) / 100
+                                pixelSize: root.editingAppearance ? Math.round(pixelSlider.value) : root.pixelSize
+                            }
+                            // Keep controls readable over both light and dark video.
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 1
+                                height: 88
+                                gradient: Gradient {
+                                    GradientStop { position: 0; color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0) }
+                                    GradientStop { position: 1; color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75) }
                                 }
                             }
-                            Item { Layout.fillWidth: true }
-                            FeedButton {
-                                text: cameraAudio.muted ? "\udb81\udd81" : "\udb81\udd7e"
-                                font.family: "JetBrainsMono Nerd Font"
-                                enabled: root.streaming && player.hasAudio
-                                Accessible.name: !player.hasAudio ? "No audio track"
-                                    : cameraAudio.muted ? "Unmute camera audio" : "Mute camera audio"
-                                ToolTip.text: !player.hasAudio ? "This stream has no audio track"
-                                    : cameraAudio.muted ? "Unmute" : "Mute"
+                            VideoOverlay {
+                                id: cameraOverlay
+                                objectName: "videoOverlay"
+                                x: video.x + (video.contentRect.width > 0 ? video.contentRect.x : 0)
+                                y: video.y + (video.contentRect.height > 0 ? video.contentRect.y : 0)
+                                width: video.contentRect.width > 0 ? video.contentRect.width : video.width
+                                height: video.contentRect.height > 0 ? video.contentRect.height : video.height
+                                active: root.streaming
+                                mode: root.editingAppearance ? root.overlayStyles[overlayChooser.currentIndex] : root.overlayStyle
+                                cameraName: root.selectedCameraIndex >= 0 ? root.cameras[root.selectedCameraIndex].name : "Camera"
+                                live: root.live
+                                framesReceived: root.framesReceived
+                                rightHeaderSpace: audioWaveform.width + 8
+                            }
+                            AudioWaveform {
+                                id: audioWaveform
+                                objectName: "audioButton"
+                                readonly property real videoWidth: cameraOverlay.width > 0 ? cameraOverlay.width : video.width
+                                x: (cameraOverlay.width > 0 ? cameraOverlay.x : video.x)
+                                    + videoWidth - feedControls.sideInset - width
+                                y: (cameraOverlay.height > 0 ? cameraOverlay.y : video.y) + feedControls.overlayInset + 8
+                                width: Math.min(104, Math.max(0, videoWidth - feedControls.sideInset * 2) * 0.3)
+                                audioAvailable: root.streaming && player.hasAudio
+                                audioMuted: cameraAudio.muted
                                 onClicked: root.toggleAudio()
                             }
-                            FeedButton {
-                                text: "\u21bb"
-                                Accessible.name: "Reconnect camera"
-                                ToolTip.text: "Reconnect"
-                                onClicked: root.play()
+                            Label {
+                                anchors.centerIn: parent
+                                width: parent.width - 48
+                                text: root.playbackMessage
+                                visible: text !== ""
+                                color: "white"
+                                wrapMode: Text.WordWrap
+                                horizontalAlignment: Text.AlignHCenter
+                                padding: 12
+                                background: Rectangle { color: "#dd080b10"; radius: 8 }
+                            }
+                            Label {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: feedControls.top
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                anchors.bottomMargin: 6
+                                text: root.message || root.sizeSaveError || root.positionSaveError
+                                visible: text !== ""
+                                color: "#ffd2d2"
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 12
+                            }
+                            RowLayout {
+                                id: feedControls
+                                readonly property real overlayInset: cameraOverlay.item && cameraOverlay.item.inset !== undefined
+                                    ? cameraOverlay.item.inset : 0
+                                readonly property real sideInset: Math.max(12, overlayInset + 6)
+                                anchors.left: cameraOverlay.width > 0 ? cameraOverlay.left : video.left
+                                anchors.right: cameraOverlay.width > 0 ? cameraOverlay.right : video.right
+                                anchors.bottom: cameraOverlay.height > 0 ? cameraOverlay.bottom : video.bottom
+                                anchors.leftMargin: sideInset
+                                anchors.rightMargin: sideInset
+                                anchors.bottomMargin: overlayInset + 12
+                                spacing: 6
+                                Item { Layout.fillWidth: true }
+                                FeedButton {
+                                    objectName: "themeButton"
+                                    text: "\udb80\udfd8"
+                                    font.family: "JetBrainsMono Nerd Font"
+                                    Accessible.name: "Video theme"
+                                    ToolTip.text: root.editingAppearance ? "Close theme preview" : "Video theme"
+                                    checked: root.editingAppearance
+                                    enabled: !appearanceWriter.running
+                                    onClicked: root.toggleAppearance()
+                                }
+                            }
+                        }
+                        Rectangle {
+                            id: themeEditor
+                            objectName: "themeEditor"
+                            visible: root.editingAppearance
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.min(appearanceColumn.implicitHeight + appearanceFooter.implicitHeight + 36, viewerPage.height * 0.6)
+                            color: Color.popups.background
+                            border.color: Color.popups.border
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 12
+                                spacing: 12
+                                Controls.ScrollView {
+                                    id: appearanceScroll
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    clip: true
+                                    contentWidth: availableWidth
+                                    Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
+                                    ColumnLayout {
+                                        id: appearanceColumn
+                                        width: appearanceScroll.availableWidth
+                                        spacing: 12
+                                        Label { text: "Video style · all cameras"; color: root.foreground }
+                                        Controls.ComboBox {
+                                            id: videoStyleChooser
+                                            objectName: "videoStyle"
+                                            Layout.fillWidth: true
+                                            model: ["Original", "Omarchy", "Pixel", "Omarchy Pixel"]
+                                            currentIndex: root.videoStyles.indexOf(root.videoStyle)
+                                            enabled: !appearanceWriter.running
+                                            Accessible.name: "Video style"
+                                            implicitHeight: 32
+                                            contentItem: Text {
+                                                text: videoStyleChooser.displayText
+                                                color: Color.popups.text
+                                                verticalAlignment: Text.AlignVCenter
+                                                leftPadding: 10; rightPadding: 28
+                                            }
+                                            background: Rectangle {
+                                                color: Color.popups.background
+                                                border.color: videoStyleChooser.activeFocus ? Color.accent : Color.popups.border
+                                            }
+                                            indicator: Text {
+                                                x: videoStyleChooser.width - width - 10
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: "\u2304"; color: Color.popups.text
+                                            }
+                                            delegate: Controls.ItemDelegate {
+                                                required property string modelData
+                                                required property int index
+                                                width: videoStyleChooser.width
+                                                text: modelData
+                                                highlighted: videoStyleChooser.highlightedIndex === index
+                                                contentItem: Text { text: parent.text; color: Color.popups.text; verticalAlignment: Text.AlignVCenter }
+                                                background: Rectangle {
+                                                    color: parent.hovered || parent.highlighted
+                                                        ? Style.hoverFillFor(Color.popups.text, Color.accent) : Color.popups.background
+                                                }
+                                            }
+                                            popup: Controls.Popup {
+                                                y: videoStyleChooser.height
+                                                width: videoStyleChooser.width
+                                                implicitHeight: styleList.contentHeight + 2
+                                                padding: 1
+                                                contentItem: ListView {
+                                                    id: styleList
+                                                    clip: true
+                                                    implicitHeight: contentHeight
+                                                    model: videoStyleChooser.popup.visible ? videoStyleChooser.delegateModel : null
+                                                    currentIndex: videoStyleChooser.highlightedIndex
+                                                }
+                                                background: Rectangle { color: Color.popups.background; border.color: Color.popups.border }
+                                            }
+                                        }
+                                        RowLayout {
+                                            visible: videoStyleChooser.currentIndex === 1 || videoStyleChooser.currentIndex === 3
+                                            Layout.fillWidth: true
+                                            Label { text: "Tint strength"; color: root.foreground }
+                                            Controls.Slider {
+                                                id: tintSlider
+                                                objectName: "tintStrength"
+                                                Layout.fillWidth: true
+                                                from: 0; to: 100; stepSize: 1
+                                                value: root.tintStrength
+                                                enabled: !appearanceWriter.running
+                                                Accessible.name: "Tint strength"
+                                                background: Rectangle {
+                                                    x: tintSlider.leftPadding
+                                                    y: tintSlider.topPadding + tintSlider.availableHeight / 2 - height / 2
+                                                    width: tintSlider.availableWidth; height: 4
+                                                    color: Color.popups.border
+                                                    Rectangle { width: tintSlider.visualPosition * parent.width; height: parent.height; color: Color.accent }
+                                                }
+                                                handle: Rectangle {
+                                                    x: tintSlider.leftPadding + tintSlider.visualPosition * (tintSlider.availableWidth - width)
+                                                    y: tintSlider.topPadding + tintSlider.availableHeight / 2 - height / 2
+                                                    implicitWidth: 14; implicitHeight: 18
+                                                    color: tintSlider.pressed ? Color.popups.text : Color.accent
+                                                    border.width: tintSlider.activeFocus ? 2 : 1
+                                                    border.color: Color.popups.text
+                                                }
+                                            }
+                                            Label { text: Math.round(tintSlider.value) + "%"; color: root.foreground }
+                                        }
+                                        RowLayout {
+                                            visible: videoStyleChooser.currentIndex === 2 || videoStyleChooser.currentIndex === 3
+                                            Layout.fillWidth: true
+                                            Label { text: "Pixel size"; color: root.foreground }
+                                            Controls.Slider {
+                                                id: pixelSlider
+                                                objectName: "pixelSize"
+                                                Layout.fillWidth: true
+                                                from: 1; to: 16; stepSize: 1
+                                                value: root.pixelSize
+                                                enabled: !appearanceWriter.running
+                                                Accessible.name: "Pixel size"
+                                                ToolTip.visible: hovered
+                                                ToolTip.text: "Larger pixels give a stronger pixelated look"
+                                                background: Rectangle {
+                                                    x: pixelSlider.leftPadding
+                                                    y: pixelSlider.topPadding + pixelSlider.availableHeight / 2 - height / 2
+                                                    width: pixelSlider.availableWidth; height: 4
+                                                    color: Color.popups.border
+                                                    Rectangle { width: pixelSlider.visualPosition * parent.width; height: parent.height; color: Color.accent }
+                                                }
+                                                handle: Rectangle {
+                                                    x: pixelSlider.leftPadding + pixelSlider.visualPosition * (pixelSlider.availableWidth - width)
+                                                    y: pixelSlider.topPadding + pixelSlider.availableHeight / 2 - height / 2
+                                                    implicitWidth: 14; implicitHeight: 18
+                                                    color: pixelSlider.pressed ? Color.popups.text : Color.accent
+                                                    border.width: pixelSlider.activeFocus ? 2 : 1
+                                                    border.color: Color.popups.text
+                                                }
+                                            }
+                                            Label { text: Math.round(pixelSlider.value) + " px"; color: root.foreground }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Label { text: "Overlay"; color: root.foreground }
+                                            Controls.ComboBox {
+                                                id: overlayChooser
+                                                objectName: "overlayStyle"
+                                                Layout.fillWidth: true
+                                                model: ["Default", "Coder", "Hackerman"]
+                                                currentIndex: root.overlayStyles.indexOf(root.overlayStyle)
+                                                enabled: !appearanceWriter.running
+                                                Accessible.name: "Camera overlay"
+                                                implicitHeight: 32
+                                                contentItem: Text {
+                                                    text: overlayChooser.displayText
+                                                    color: Color.popups.text
+                                                    verticalAlignment: Text.AlignVCenter
+                                                    leftPadding: 10; rightPadding: 28
+                                                }
+                                                background: Rectangle {
+                                                    color: Color.popups.background
+                                                    border.color: overlayChooser.activeFocus ? Color.accent : Color.popups.border
+                                                }
+                                                indicator: Text {
+                                                    x: overlayChooser.width - width - 10
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: "\u2304"; color: Color.popups.text
+                                                }
+                                                delegate: Controls.ItemDelegate {
+                                                    required property string modelData
+                                                    required property int index
+                                                    width: overlayChooser.width
+                                                    text: modelData
+                                                    highlighted: overlayChooser.highlightedIndex === index
+                                                    contentItem: Text { text: parent.text; color: Color.popups.text; verticalAlignment: Text.AlignVCenter }
+                                                    background: Rectangle {
+                                                        color: parent.hovered || parent.highlighted
+                                                            ? Style.hoverFillFor(Color.popups.text, Color.accent) : Color.popups.background
+                                                    }
+                                                }
+                                                popup: Controls.Popup {
+                                                    y: overlayChooser.height
+                                                    width: overlayChooser.width
+                                                    implicitHeight: overlayList.contentHeight + 2
+                                                    padding: 1
+                                                    contentItem: ListView {
+                                                        id: overlayList
+                                                        clip: true
+                                                        implicitHeight: contentHeight
+                                                        model: overlayChooser.popup.visible ? overlayChooser.delegateModel : null
+                                                        currentIndex: overlayChooser.highlightedIndex
+                                                    }
+                                                    background: Rectangle { color: Color.popups.background; border.color: Color.popups.border }
+                                                }
+                                            }
+                                        }
+
+                                    }
+                                }
+                                RowLayout {
+                                    id: appearanceFooter
+                                    Layout.fillWidth: true
+                                    Label {
+                                        text: root.appearanceMessage || "Previewing live · Apply to save for all cameras."
+                                        color: root.foreground
+                                        font.pixelSize: 12
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                    }
+                                    Button {
+                                        objectName: "applyStyle"
+                                        text: appearanceWriter.running ? "Applying…" : "Apply"
+                                        enabled: !appearanceWriter.running
+                                        onClicked: {
+                                            root.appearanceMessage = ""
+                                            appearanceWriter.pending = JSON.stringify({style: root.videoStyles[videoStyleChooser.currentIndex],
+                                                strength: Math.round(tintSlider.value), pixelSize: Math.round(pixelSlider.value),
+                                                overlay: root.overlayStyles[overlayChooser.currentIndex]})
+                                            appearanceWriter.running = true
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -733,6 +1053,7 @@ Panel {
                 }
             }
             component FeedButton: Controls.Button {
+                id: feedButton
                 implicitWidth: 34
                 implicitHeight: 34
                 padding: 0
@@ -742,16 +1063,17 @@ Panel {
                 contentItem: Text {
                     text: parent.text
                     font: parent.font
-                    color: parent.enabled ? "white" : "#8b929a"
+                    color: !feedButton.enabled ? Color.muted
+                        : feedButton.checked || feedButton.hovered || feedButton.activeFocus ? Color.accent : Color.foreground
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    radius: width / 2
-                    color: parent.checked ? (parent.down || parent.hovered ? "#238657" : "#176b45")
-                        : parent.down ? "#e64b5563" : parent.hovered ? "#e637414e" : "#cc141a22"
-                    border.width: parent.activeFocus ? 2 : 1
-                    border.color: parent.activeFocus ? "white" : "#55ffffff"
+                    radius: 0
+                    color: "transparent"
+                    border.width: feedButton.activeFocus ? 2 : 1
+                    border.color: !feedButton.enabled ? Color.muted
+                        : feedButton.checked || feedButton.hovered || feedButton.activeFocus ? Color.accent : Color.popups.border
                 }
             }
             // Use scene coordinates: the popup can shift as its size changes.

@@ -9,13 +9,17 @@ import tempfile
 repo = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
     work = Path(temporary)
+    # A configured camera already has this directory before opening its live feed.
+    (work / "config" / "rtsp-camera").mkdir(parents=True)
     for name in ("Commons", "Ui"):
         (work / name).symlink_to(Path("/usr/share/omarchy/shell") / name)
     (work / "Camera").symlink_to(repo)
     shutil.copy2(repo / "tests/CameraChecks.qml", work / "shell.qml")
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-        "color=c=blue:s=320x240:r=10", "-t", "20", "-c:v", "mpeg4",
+        "color=c=blue:s=320x240:r=10", "-f", "lavfi", "-i",
+        "anullsrc=channel_layout=mono:sample_rate=44100", "-t", "60",
+        "-c:v", "mpeg4", "-c:a", "aac",
         str(work / "sample.mp4")
     ], check=True)
     subprocess.run([
@@ -24,11 +28,17 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
         str(work / "stall.mp4")
     ], check=True)
     environment = dict(os.environ, XDG_CONFIG_HOME=str(work / "config"),
-                       QT_QUICK_CONTROLS_STYLE="Basic")
+                       QT_QUICK_CONTROLS_STYLE="Basic", CAMERA_CLOCK_TICKS=str(os.sysconf("SC_CLK_TCK")))
     if "--ui-only" in sys.argv[1:]:
         environment["CAMERA_TEST_UI_ONLY"] = "1"
+    if "--benchmark" in sys.argv[1:]:
+        environment["CAMERA_TEST_BENCHMARK"] = "1"
+    if "--capture" in sys.argv[1:]:
+        captures = Path("/tmp/rtsp-camera-captures")
+        captures.mkdir(exist_ok=True)
+        environment["CAMERA_TEST_CAPTURE_DIR"] = str(captures)
     result = subprocess.run(["quickshell", "-p", str(work), "--no-color"],
-                            env=environment, capture_output=True, text=True, timeout=65)
+                            env=environment, capture_output=True, text=True, timeout=100)
     output = result.stdout + result.stderr
     print(output)
     if result.returncode or "CAMERA_CHECKS_PASSED" not in output or "CAMERA_CHECKS_FAILED" in output:

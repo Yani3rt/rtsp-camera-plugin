@@ -43,6 +43,23 @@ def validate_size(data):
     return {"width": data["width"], "height": data["height"]}
 
 
+def validate_appearance(data):
+    if (not isinstance(data, dict)
+            or data.get("style") not in ("original", "theme", "pixel", "theme-pixel")
+            or type(data.get("strength")) is not int or not 0 <= data["strength"] <= 100):
+        raise ValueError("Choose a video style and tint strength from 0 to 100.")
+    pixel_size = data.get("pixelSize", 3)
+    if type(pixel_size) is not int or not 1 <= pixel_size <= 16:
+        raise ValueError("Choose a pixel size from 1 to 16.")
+    overlay = data.get("overlay", "default")
+    if not isinstance(overlay, str):
+        raise ValueError("Choose a supported camera overlay.")
+    overlay = {"off": "default", "hud": "coder", "terminal": "hacker"}.get(overlay, overlay)
+    if overlay not in ("default", "coder", "hacker"):
+        raise ValueError("Choose a supported camera overlay.")
+    return {"style": data["style"], "strength": data["strength"], "pixelSize": pixel_size, "overlay": overlay}
+
+
 def validate_position(data):
     if (not isinstance(data, dict) or not isinstance(data.get("screen"), str)
             or not data["screen"] or len(data["screen"]) > 128
@@ -151,9 +168,10 @@ if __name__ == "__main__":
             sys.exit(0)
         size_only = sys.argv[1:] == ["--view-size"]
         position_only = sys.argv[1:] == ["--position"]
-        validator = validate_position if position_only else validate_size if size_only else validate
+        appearance_only = sys.argv[1:] == ["--appearance"]
+        validator = validate_appearance if appearance_only else validate_position if position_only else validate_size if size_only else validate
         data = validator(json.loads(sys.stdin.readline()))
-        filename = position_filename(data["screen"]) if position_only else "view.json" if size_only else "config.json"
+        filename = "appearance.json" if appearance_only else position_filename(data["screen"]) if position_only else "view.json" if size_only else "config.json"
         save(data, base / "rtsp-camera", filename)
     except ValueError as error:
         # Only our validation messages are safe to display; JSON errors are generic.
