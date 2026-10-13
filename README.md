@@ -26,18 +26,44 @@ The last selection is remembered and shared across monitor widgets. Names must b
 attempts. 
 
 Drag either bottom corner to resize the viewer; double-click a corner to
-reset its size. Dimensions are saved in `~/.config/rtsp-camera/view.json`
-(or under `$XDG_CONFIG_HOME`) and shared across monitors. They survive closing
-and shell restarts, and fit within the current monitor. Video retains its
-aspect ratio while resizing.
+reset its size to 640×500. Dimensions are saved per stable camera ID in
+`~/.config/rtsp-camera/view-<camera-id>.json` (or under `$XDG_CONFIG_HOME`),
+shared across monitors. New cameras start at 640×500, not another camera's size.
+Each open viewer keeps its own geometry: resizing one does not resize other
+viewers, including duplicate pins of that camera. Reopening or switching back
+restores that camera's saved dimensions, fitted within the current monitor.
+Renaming retains geometry. Video retains its aspect ratio while resizing.
 
 Turn on the square pin switch to keep the camera above other windows while using
-your desktop. Turning it off restores outside-click dismissal. Close or Escape still closes
-the pinned viewer. While pinned, drag the empty header space to move the viewer anywhere
+your desktop. **Click the bar icon again to open a separate selectable viewer**;
+each pinned viewer stays on its camera, so you can select and pin several cameras
+concurrently. A fresh viewer automatically selects the first camera in saved-list
+order that is not already pinned in this bar widget, skipping all its open pins.
+With no pins, or when every camera is pinned, it keeps the remembered selection
+(including a single-camera library). This choice runs once after the initial
+settings load; subsequent dropdown choices, Config edits, and file reloads do not
+reapply it. A pin's dropdown and add-camera button are disabled; unpin it to
+switch cameras, or use the separate selectable viewer. Config still edits that
+pin's profile. Renames and connection edits update its stable camera ID; deleting
+that profile closes its pinned viewers rather than switching them to another camera.
+Duplicate pins of the same camera are allowed (each uses its own decoder).
+Unpinning restores popup mode and closes any existing selectable popup, but never
+another pinned viewer. Close or Escape closes only that viewer. The bar and IPC
+open/toggle operate on the selectable popup; IPC close/audio/resize/pin/status
+use that popup, or the most recently created open pin when no popup exists.
+Closed viewers stop playback immediately and are destroyed after pending settings
+writes finish. Pins are session-only, not restored after restarting the shell.
+While pinned, drag the empty header space to move the viewer anywhere
 within the current screen. Unpinning returns it to the bar icon. The dragged
-position is saved separately for each monitor in `position-<monitor>.json` under
-the camera config directory. Pinning again restores that position, including
+position is saved per camera and monitor in `position-<camera-id>--<monitor>.json`
+under the camera config directory. Moving one open pin does not move the others;
+new pins restore that camera's latest saved position on that monitor, including
 after closing or restarting the shell, clamped to the current screen size.
+A camera without a position on this monitor pins at the bar anchor. Camera IDs
+and monitor names are filename-encoded (camera hyphens become `%2D` to keep the
+separator unambiguous). Legacy `view.json` and `position-<monitor>.json` files
+are left untouched and are not inherited by production viewers. Debounced writes
+retain the original camera and monitor even when switching or closing quickly.
 The pin switch itself resets when the viewer is closed.
 While pinned, the surrounding panel and header fade out when the pointer leaves
 the viewer, and fade back in on hover. The camera feed and its overlay controls
@@ -196,6 +222,14 @@ python3 tests/run_qml_checks.py
 For layout-only changes, use `python3 tests/run_qml_checks.py --ui-only` to skip
 the playback recovery checks. This still checks rendered effect pixels, live palette
 updates, appearance persistence, and the settings controls.
+
+Use `python3 tests/run_qml_checks.py --pin-only` for the real Widget entry-point
+checks: bar clicks, first-unpinned selection and fallbacks, simultaneous independent playback, fixed camera IDs, settings
+selection, rename/delete and connection updates, duplicate pins, rotation/global
+appearance, independent movement/audio, unpin/reopen, and dynamic viewer cleanup.
+They also check per-camera size/position restoration, camera/monitor scope,
+rapid switch/close writes, late-load user edits, legacy-file preservation, and
+geometry restoration in a separate shell process.
 
 Use `python3 tests/run_qml_checks.py --rotation-only` for rotation checks with a
 generated four-color video, covering every video style, saved camera rotations,

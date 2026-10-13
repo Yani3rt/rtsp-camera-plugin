@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 
-from config import save, validate, validate_size, validate_position, position_filename
+from config import save, validate, validate_size, validate_position, position_filename, size_filename
 from config import normalize_library, update_library, validate_appearance, update_appearance
 
 
@@ -98,6 +98,30 @@ class SettingsTests(unittest.TestCase):
                 with self.subTest(data=data):
                     self.assertNotEqual(run(data).returncode, 0)
                     self.assertEqual((directory / "appearance.json").read_bytes(), before)
+
+    def test_camera_geometry_cli_uses_encoded_identity_and_monitor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "rtsp-camera"
+            environment = dict(os.environ, XDG_CONFIG_HOME=temporary)
+            identity = "front/雪 !'()"
+            for flag, data, filename in (
+                ("--view-size", dict(cameraId=identity, width=740, height=580), "view-front%2F%E9%9B%AA%20!'().json"),
+                ("--position", dict(cameraId=identity, screen="DP/1", x=140, y=160), "position-front%2F%E9%9B%AA%20!'()--DP%2F1.json"),
+            ):
+                result = subprocess.run([sys.executable, str(Path(__file__).with_name("config.py")), flag],
+                    input=json.dumps(data), text=True, capture_output=True, env=environment)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertTrue((directory / filename).exists(), filename)
+                self.assertEqual(json.loads((directory / filename).read_text()), data)
+
+    def test_geometry_filename_safety_and_distinct_monitor_pairs(self):
+        self.assertEqual(size_filename("a--b/雪"), "view-a%2D%2Db%2F%E9%9B%AA.json")
+        self.assertNotEqual(position_filename("b--c", "a"), position_filename("c", "a--b"))
+        for identity in (None, "", True, [], "x" * 65, "bad\n", "\ud800"):
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                size_filename(identity)
+        with self.assertRaises(ValueError):
+            size_filename("雪" * 64)
 
     def test_helper_cli_routes_profiles_size_and_position(self):
         with tempfile.TemporaryDirectory() as temporary:

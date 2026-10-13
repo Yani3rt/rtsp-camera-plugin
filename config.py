@@ -40,7 +40,7 @@ def validate_size(data):
         for key in ("width", "height")
     ):
         raise ValueError("Invalid viewer size.")
-    return {"width": data["width"], "height": data["height"]}
+    return dict(width=data["width"], height=data["height"], **geometry_identity(data))
 
 
 def validate_appearance(data):
@@ -66,7 +66,7 @@ def validate_position(data):
             or any(type(data.get(key)) is not int or not 0 <= data[key] <= 32768
                    for key in ("x", "y"))):
         raise ValueError("Invalid viewer position.")
-    return {key: data[key] for key in ("screen", "x", "y")}
+    return dict({key: data[key] for key in ("screen", "x", "y")}, **geometry_identity(data))
 
 
 def update_appearance(data, directory):
@@ -101,9 +101,36 @@ def update_appearance(data, directory):
         return appearance
 
 
-def position_filename(screen):
+def geometry_identity(data):
+    if "cameraId" not in data:
+        return {}  # Standalone legacy harness; production always supplies an ID.
+    identity = data["cameraId"]
+    if (not isinstance(identity, str) or not identity or len(identity) > 64
+            or any(ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF for c in identity)):
+        raise ValueError("Invalid camera identifier.")
+    return {"cameraId": identity}
+
+
+def camera_token(identity):
+    geometry_identity({"cameraId": identity})
+    return quote(identity, safe="-_.!~*'()").replace("-", "%2D")
+
+
+def size_filename(identity):
+    return checked_filename("view-" + camera_token(identity) + ".json")
+
+
+def checked_filename(filename):
+    if len(filename.encode("utf-8")) > 255:
+        raise ValueError("Geometry identifier is too long.")
+    return filename
+
+
+def position_filename(screen, identity=None):
     # Match QML's encodeURIComponent, keeping monitor names within one filename.
-    return "position-" + quote(screen, safe="-_.!~*'()") + ".json"
+    validate_position(dict(screen=screen, x=0, y=0))
+    prefix = camera_token(identity) + "--" if identity is not None else ""
+    return checked_filename("position-" + prefix + quote(screen, safe="-_.!~*'()") + ".json")
 
 
 def normalize_library(data):
@@ -206,7 +233,9 @@ if __name__ == "__main__":
         position_only = sys.argv[1:] == ["--position"]
         validator = validate_position if position_only else validate_size if size_only else validate
         data = validator(json.loads(sys.stdin.readline()))
-        filename = position_filename(data["screen"]) if position_only else "view.json" if size_only else "config.json"
+        filename = (position_filename(data["screen"], data.get("cameraId")) if position_only
+                    else size_filename(data["cameraId"]) if size_only and "cameraId" in data
+                    else "view.json" if size_only else "config.json")
         save(data, base / "rtsp-camera", filename)
     except ValueError as error:
         # Only our validation messages are safe to display; JSON errors are generic.

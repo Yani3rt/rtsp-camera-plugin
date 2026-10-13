@@ -15,7 +15,15 @@ Panel {
     property var anchorItem: null
     property var hostWidget: null
     property bool configuring: true
+    // Automatic setup while FileView loads is not an explicit Config request.
+    property bool settingsRequested: false
     property bool pinned: false
+    // Set by Widget for detached pins; standalone panels remain selectable.
+    property string fixedCameraId: ""
+    // Widget supplies this only for a fresh viewer. Null means already handled.
+    property var initialPinnedCameraIds: null
+    readonly property bool canDispose: !writer.running && !appearanceWriter.running
+        && !sizeWriter.running && !positionWriter.running && !sizeDirty && !pendingPosition
     property bool configured: false
     property var cameras: []
     property string selectedCameraId: ""
@@ -28,6 +36,21 @@ Panel {
     property double framesReceived: 0
     property real viewerWidth: 640
     property real viewerHeight: 500
+    // Production geometry is per camera; standalone panels retain legacy routes.
+    property bool independentViewerSize: false
+    property var pendingSizes: []
+    property var pendingPositions: []
+    // Keep this viewer's latest edits even after a queue entry becomes in-flight.
+    // Disk may still contain an older value when returning to the same scope.
+    property var localSizes: Object.create(null)
+    property var localPositions: Object.create(null)
+    property var geometryReaders: []
+    property int geometryGeneration: 0
+    property bool sizeTouched: false
+    property bool positionTouched: false
+    property string geometryMonitorName: popup.screen ? popup.screen.name : ""
+    onGeometryMonitorNameChanged: if (independentViewerSize) resetGeometry(true)
+    property bool viewerSizeLoaded: false
     property bool sizeDirty: false
     property string sizeSaveError: ""
     property string positionSaveError: ""
@@ -41,7 +64,10 @@ Panel {
     property var cameraRotations: ({})
     readonly property int videoRotation: Object.prototype.hasOwnProperty.call(cameraRotations, selectedCameraId)
         ? cameraRotations[selectedCameraId] : 0
-    onSelectedCameraIdChanged: editingAppearance = false
+    onSelectedCameraIdChanged: {
+        editingAppearance = false
+        if (independentViewerSize) resetGeometry()
+    }
     readonly property var videoStyles: ["original", "theme", "pixel", "theme-pixel"]
     property var pendingPosition: null
     property int retryAttempt: 0
@@ -53,7 +79,8 @@ Panel {
     readonly property bool live: streaming && frameWatchdog.running
         && player.playbackState === MediaPlayer.PlayingState
 
-    function editSettings(newCamera) {
+    function editSettings(newCamera, automatic) {
+        settingsRequested = automatic !== true
         editingAppearance = false
         editingCameraId = newCamera === true ? "" : selectedCameraId
         cameraName.text = newCamera === true ? "" : selectedCameraIndex >= 0 ? cameras[selectedCameraIndex].name : "Camera 1"
@@ -117,28 +144,46 @@ Panel {
             ids[camera.id] = true
             names[camera.name.toLowerCase()] = true
         })
-        var selected = data.cameras.find(function(camera) { return camera.id === data.selectedId })
-        if ((data.cameras.length && !selected) || (!data.cameras.length && data.selectedId !== "")) throw new Error()
-        var changed = selectedCameraId !== data.selectedId
+        var globalSelected = data.cameras.find(function(camera) { return camera.id === data.selectedId })
+        if ((data.cameras.length && !globalSelected) || (!data.cameras.length && data.selectedId !== "")) throw new Error()
+        var viewerId = fixedCameraId || data.selectedId
+        var selected = data.cameras.find(function(camera) { return camera.id === viewerId })
+        if (fixedCameraId && !selected) {
+            // Deleting a pinned profile closes its viewer, never substitutes another feed.
+            cameras = data.cameras
+            close()
+            configured = false
+            return
+        }
+        var changed = selectedCameraId !== viewerId
             || (selected && (selected.url !== config.url || selected.username !== config.username || selected.password !== config.password))
         var wasStreaming = streaming
         cameras = data.cameras
-        selectedCameraId = data.selectedId
+        selectedCameraId = viewerId
         config = selected || {url: "rtsp://", username: "", password: ""}
         configured = !!selected
-        if (!opened || !configured) configuring = !configured
+        if (!opened || !configured || !settingsRequested) configuring = !configured
         if (changed) cameraAudio.muted = true
         if (changed && wasStreaming && streaming) play()
+        var pinnedIds = initialPinnedCameraIds
+        initialPinnedCameraIds = null
+        if (pinnedIds && pinnedIds.length && !fixedCameraId && !settingsRequested) {
+            var available = cameras.findIndex(function(camera) { return pinnedIds.indexOf(camera.id) < 0 })
+            // Use the normal asynchronous selection write, once only. Reloads
+            // and its result must never reapply the fresh-open preference.
+            if (available >= 0) selectCamera(available)
+        }
     }
     function runProfileOperation(operation) {
         if (writer.running) return
+        initialPinnedCameraIds = null
         message = ""
         writer.stayInSettings = configuring && operation.action === "select"
         writer.pending = JSON.stringify(operation)
         writer.running = true
     }
     function selectCamera(index) {
-        if (writer.running || index < 0 || index >= cameras.length) return
+        if (fixedCameraId || writer.running || index < 0 || index >= cameras.length) return
         if (index === selectedCameraIndex) {
             if (configuring) editSettings()
             return
@@ -205,21 +250,60 @@ Panel {
         viewerWidth = Math.round(Math.min(popup.availableCardWidth, Math.max(420, width)))
         viewerHeight = Math.round(Math.min(popup.availableCardHeight, Math.max(440, height)))
         sizeDirty = true
+        sizeTouched = true
+        var size = {width: viewerWidth, height: viewerHeight}
+        if (independentViewerSize) {
+            if (!selectedCameraId) { sizeDirty = false; return }
+            size.cameraId = selectedCameraId
+            localSizes[selectedCameraId] = size
+        }
+        pendingSizes = pendingSizes.filter(function(s) { return s.cameraId !== size.cameraId }).concat([size])
         sizeSaveTimer.restart()
     }
     function saveViewerSize() {
-        if (!sizeDirty || sizeWriter.running) return
-        sizeWriter.pending = JSON.stringify({width: viewerWidth, height: viewerHeight})
-        sizeDirty = false
+        if (!pendingSizes.length || sizeWriter.running) return
+        sizeWriter.pending = JSON.stringify(pendingSizes[0])
+        pendingSizes = pendingSizes.slice(1)
+        sizeDirty = pendingSizes.length > 0
         sizeWriter.running = true
+    }
+    function cameraToken(id) { return encodeURIComponent(id).replace(/-/g, "%2D") }
+    function positionKey(id, monitor) { return JSON.stringify([id, monitor]) }
+    function resetGeometry(positionOnly) {
+        geometryGeneration++
+        geometryReaders.forEach(function(reader) { reader.destroy() })
+        geometryReaders = []
+        var localSize = Object.prototype.hasOwnProperty.call(localSizes, selectedCameraId)
+            ? localSizes[selectedCameraId] : null
+        var key = positionKey(selectedCameraId, geometryMonitorName)
+        var localPosition = Object.prototype.hasOwnProperty.call(localPositions, key)
+            ? localPositions[key] : null
+        positionTouched = !!localPosition
+        if (positionOnly !== true) {
+            sizeTouched = !!localSize
+            viewerSizeLoaded = !!localSize
+            viewerWidth = localSize ? localSize.width : 640
+            viewerHeight = localSize ? localSize.height : 500
+        }
+        popup.savedPosition = localPosition ? Qt.point(localPosition.x, localPosition.y) : null
+        popup.pinnedOrigin = popup.savedPosition || popup.anchoredOrigin
+        Qt.callLater(loadGeometry)
+    }
+    function loadGeometry() {
+        if (!independentViewerSize || !selectedCameraId || geometryReaders.length) return
+        var readers = [cameraSizeReader.createObject(root, {cameraId: selectedCameraId, generation: geometryGeneration})]
+        if (geometryMonitorName) readers.push(cameraPositionReader.createObject(root, {
+            cameraId: selectedCameraId, generation: geometryGeneration, monitor: geometryMonitorName}))
+        geometryReaders = readers
     }
     function toggleAudio() {
         if (streaming && player.hasAudio) cameraAudio.muted = !cameraAudio.muted
     }
     function saveViewerPosition() {
-        if (!pendingPosition || positionWriter.running) return
-        positionWriter.pending = JSON.stringify(pendingPosition)
-        pendingPosition = null
+        if (!pendingPositions.length || positionWriter.running) return
+        positionWriter.pending = JSON.stringify(pendingPositions[0])
+        pendingPositions = pendingPositions.slice(1)
+        pendingPosition = pendingPositions.length ? pendingPositions[0] : null
         positionWriter.running = true
     }
     onStreamingChanged: {
@@ -245,8 +329,9 @@ Panel {
             saveViewerPosition()
         }
         if (opened) {
+            settingsRequested = false
             configuring = !configured
-            if (configuring) editSettings()
+            if (configuring) editSettings(false, true)
         }
     }
 
@@ -285,7 +370,7 @@ Panel {
     FileView {
         id: positionFile
         readonly property string monitorName: popup.screen ? popup.screen.name : ""
-        path: monitorName ? root.configPath.replace(/config\.json$/, "position-" + encodeURIComponent(monitorName) + ".json") : ""
+        path: !root.independentViewerSize && monitorName ? root.configPath.replace(/config\.json$/, "position-" + encodeURIComponent(monitorName) + ".json") : ""
         watchChanges: true
         printErrors: false
         onPathChanged: popup.savedPosition = null
@@ -298,7 +383,9 @@ Panel {
                     || !isFinite(saved.x) || !isFinite(saved.y)
                     || saved.x < 0 || saved.y < 0 || saved.x > 32768 || saved.y > 32768) return
                 popup.savedPosition = Qt.point(saved.x, saved.y)
-                if (popup.pinned) popup.pinnedOrigin = popup.boundedOrigin(popup.savedPosition)
+                // Remember the latest monitor position for future pins, without
+                // teleporting another detached viewer that is already open.
+                if (popup.pinned && !root.fixedCameraId) popup.pinnedOrigin = popup.boundedOrigin(popup.savedPosition)
             } catch (error) { /* No saved position: use the bar anchor. */ }
         }
     }
@@ -320,11 +407,13 @@ Panel {
     }
     FileView {
         id: sizeFile
-        path: root.configPath.replace(/config\.json$/, "view.json")
+        path: root.independentViewerSize ? "" : root.configPath.replace(/config\.json$/, "view.json")
         watchChanges: true
         printErrors: false
         onFileChanged: reload()
         onLoaded: {
+            if (root.independentViewerSize && root.viewerSizeLoaded) return
+            root.viewerSizeLoaded = true
             if (root.sizeDirty || sizeWriter.running) return
             try {
                 var size = JSON.parse(text())
@@ -336,11 +425,59 @@ Panel {
                 root.viewerHeight = size.height
             } catch (error) { /* Missing or invalid size uses the defaults. */ }
         }
+        onLoadFailed: root.viewerSizeLoaded = true
     }
     Timer {
         id: sizeSaveTimer
         interval: 300
         onTriggered: root.saveViewerSize()
+    }
+    Component {
+        id: cameraSizeReader
+        FileView {
+            required property string cameraId
+            required property int generation
+            path: root.configPath.replace(/config\.json$/, "view-" + root.cameraToken(cameraId) + ".json")
+            printErrors: false
+            onLoaded: {
+                if (generation !== root.geometryGeneration || root.sizeTouched
+                    || Object.prototype.hasOwnProperty.call(root.localSizes, cameraId)) return
+                root.viewerSizeLoaded = true
+                try {
+                    var size = JSON.parse(text())
+                    if (size.cameraId !== cameraId || !Number.isInteger(size.width) || !Number.isInteger(size.height)
+                        || size.width < 1 || size.height < 1 || size.width > 32768 || size.height > 32768) return
+                    root.viewerWidth = size.width; root.viewerHeight = size.height
+                    if (popup.pinned && !root.positionTouched && !popup.savedPosition)
+                        popup.pinnedOrigin = popup.anchoredOrigin
+                } catch (error) {}
+            }
+            onLoadFailed: if (generation === root.geometryGeneration) root.viewerSizeLoaded = true
+        }
+    }
+    Component {
+        id: cameraPositionReader
+        FileView {
+            required property string cameraId
+            required property int generation
+            required property string monitor
+            path: root.configPath.replace(/config\.json$/, "position-" + root.cameraToken(cameraId) + "--" + encodeURIComponent(monitor) + ".json")
+            printErrors: false
+            onLoaded: {
+                if (generation !== root.geometryGeneration || root.positionTouched
+                    || Object.prototype.hasOwnProperty.call(root.localPositions, root.positionKey(cameraId, monitor))) return
+                try {
+                    var saved = JSON.parse(text())
+                    if (saved.cameraId !== cameraId || saved.screen !== monitor
+                        || !Number.isInteger(saved.x) || !Number.isInteger(saved.y)
+                        || saved.x < 0 || saved.y < 0 || saved.x > 32768 || saved.y > 32768) return
+                    popup.savedPosition = Qt.point(saved.x, saved.y)
+                    // Clamp through cardOrigin, not here: size may still be loading.
+                    // Late initial load may restore a pin, but never overwrite its own drag.
+                    if (popup.pinned) popup.pinnedOrigin = popup.savedPosition
+                } catch (error) {}
+            }
+        }
     }
     Process {
         id: sizeWriter
@@ -467,7 +604,17 @@ Panel {
         pinned: root.pinned
         onPositionMoved: function(x, y) {
             if (!screen) return
-            root.pendingPosition = {screen: screen.name, x: Math.round(x), y: Math.round(y)}
+            root.positionTouched = true
+            var position = {screen: root.geometryMonitorName, x: Math.round(x), y: Math.round(y)}
+            if (root.independentViewerSize) {
+                if (!root.selectedCameraId) return
+                position.cameraId = root.selectedCameraId
+                root.localPositions[root.positionKey(position.cameraId, position.screen)] = position
+            }
+            root.pendingPositions = root.pendingPositions.filter(function(p) {
+                return p.cameraId !== position.cameraId || p.screen !== position.screen
+            }).concat([position])
+            root.pendingPosition = root.pendingPositions[0]
             positionSaveTimer.restart()
         }
         contentWidth: fittedContentWidth(root.viewerWidth)
@@ -522,7 +669,7 @@ Panel {
                             textRole: "name"
                             currentIndex: root.selectedCameraIndex
                             displayText: root.cameras.length ? currentText : "No cameras"
-                            enabled: !writer.running && root.cameras.length > 0
+                            enabled: !root.fixedCameraId && !writer.running && root.cameras.length > 0
                             Accessible.name: "Select camera"
                             onActivated: function(index) { root.selectCamera(index) }
                             contentItem: Text {
@@ -1045,7 +1192,7 @@ Panel {
                                 Controls.ToolButton {
                                     objectName: "addCameraButton"
                                     text: "+"
-                                    enabled: !writer.running && root.cameras.length < 32
+                                    enabled: !root.fixedCameraId && !writer.running && root.cameras.length < 32
                                     Accessible.name: "Add camera"
                                     ToolTip.visible: hovered
                                     ToolTip.text: "Add camera"

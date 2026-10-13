@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from config import size_filename, position_filename
 
 repo = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
@@ -41,6 +43,15 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
         "drawbox=x=160:y=120:w=160:h=120:color=white:t=fill",
         "-t", "30", "-c:v", "mpeg4", str(work / "rotation.mp4")
     ], check=True)
+    if "--pin-only" in sys.argv[1:]:
+        environment["CAMERA_TEST_PIN_ONLY"] = "1"
+    legacy = {}
+    if "--pin-only" in sys.argv[1:]:
+        for name, value in {"view.json": {"width": 880, "height": 650},
+                            "position-DP-1.json": {"screen": "DP-1", "x": 400, "y": 300}}.items():
+            path = work / "config" / "rtsp-camera" / name
+            legacy[path] = json.dumps(value).encode()
+            path.write_bytes(legacy[path])
     if "--rotation-only" in sys.argv[1:]:
         environment["CAMERA_TEST_ROTATION_ONLY"] = "1"
     if "--ui-only" in sys.argv[1:]:
@@ -57,6 +68,30 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
     print(output)
     if result.returncode or "CAMERA_CHECKS_PASSED" not in output or "CAMERA_CHECKS_FAILED" in output:
         raise SystemExit(1)
+    for path, before in legacy.items():
+        assert path.read_bytes() == before, f"Legacy geometry changed: {path.name}"
+    for line in output.splitlines():
+        if "GEOMETRY_FILES " not in line:
+            continue
+        sample = json.loads(line.split("GEOMETRY_FILES ", 1)[1])
+        directory = work / "config" / "rtsp-camera"
+        for key, width, height, x, y in (("a", 710, 550, 150, 170), ("b", 670, 510, 230, 250)):
+            identity = sample[key]
+            assert json.loads((directory / size_filename(identity)).read_text()) == dict(cameraId=identity, width=width, height=height)
+            assert json.loads((directory / position_filename(sample["screen"], identity)).read_text()) == dict(cameraId=identity, screen=sample["screen"], x=x, y=y)
+        monitor = "Geometry test monitor/2"
+        assert json.loads((directory / position_filename(monitor, sample["a"])).read_text()) == dict(cameraId=sample["a"], screen=monitor, x=190, y=210)
+        print("PASS: exact per-camera/per-monitor geometry files read back" + ("; legacy files unchanged" if legacy else ""))
+        library = dict(version=2, selectedId=sample["a"], cameras=[
+            dict(id=sample[key], name="Restart " + key, url="rtsp://127.0.0.1:1/restart", username="", password="")
+            for key in ("a", "b")])
+        (directory / "config.json").write_text(json.dumps(library))
+        restarted = subprocess.run(["quickshell", "-p", str(work), "--no-color"],
+            env=dict(environment, CAMERA_TEST_GEOMETRY_RESTART=json.dumps(sample)),
+            capture_output=True, text=True, timeout=20)
+        restart_output = restarted.stdout + restarted.stderr
+        print(restart_output)
+        assert restarted.returncode == 0 and "CAMERA_CHECKS_PASSED" in restart_output and "CAMERA_CHECKS_FAILED" not in restart_output
     checked = 0
     for line in output.splitlines():
         if "ROTATION_PIXELS " not in line:
@@ -75,6 +110,6 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
                        "b": b > r + 30 and b > g + 30, "w": min(r, g, b) > 120}
             assert matches[expected], (sample["name"], expected, (r, g, b))
         checked += 1
-    if "--benchmark" not in sys.argv[1:]:
+    if "--benchmark" not in sys.argv[1:] and "--pin-only" not in sys.argv[1:]:
         assert checked == 16, f"Expected 16 rotation/style captures, got {checked}"
         print("PASS: all 16 rendered rotation/style pixel checks")

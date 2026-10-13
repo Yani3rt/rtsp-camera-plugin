@@ -35,6 +35,7 @@ ShellRoot {
         anchors { top: true; left: true; right: true }
         implicitHeight: 28
         Item { id: anchor; x: 700; width: 30; height: 28 }
+        Widget { id: widget; bar: fakeBar; x: 750; width: 30; height: 28 }
     }
     QtObject {
         id: fakeBar
@@ -42,9 +43,18 @@ ShellRoot {
         property int barSize: 28
         property color foreground: "white"
         property color barForeground: "white"
+        property bool vertical: false
+        property bool foregroundAnimationEnabled: false
+        property color urgent: "red"
+        function hideTooltip(item) {}
+        function showTooltip(item, text) {}
         property var activePopout: null
-        function requestPopout(key) { activePopout = key }
-        function releasePopout(key) { activePopout = null }
+        function requestPopout(key) {
+            if (activePopout === key) return
+            if (activePopout) activePopout.closeForPopoutSwitch()
+            activePopout = key
+        }
+        function releasePopout(key) { if (activePopout === key) activePopout = null }
     }
     CameraPanel { id: panel; bar: fakeBar; anchorItem: anchor }
     Component { id: newPanel; CameraPanel { bar: fakeBar; anchorItem: anchor } }
@@ -52,12 +62,14 @@ ShellRoot {
         interval: 1000; running: true
         onTriggered: {
             try {
-                if (Quickshell.env("CAMERA_TEST_ROTATION_ONLY") === "1") probe.runRotation()
+                if (Quickshell.env("CAMERA_TEST_GEOMETRY_RESTART")) probe.runGeometryRestart()
+                else if (Quickshell.env("CAMERA_TEST_PIN_ONLY") === "1") { probe.runMultiPin(); probe.runFreshSelection(); probe.runGeometry() }
+                else if (Quickshell.env("CAMERA_TEST_ROTATION_ONLY") === "1") probe.runRotation()
                 else if (Quickshell.env("CAMERA_TEST_BENCHMARK") === "1") probe.runVideoStyles(true)
                 else {
                     probe.runAppearance(); probe.runOverlayPixels(); probe.runEffectPixels(); probe.runDrag()
                     if (Quickshell.env("CAMERA_TEST_UI_ONLY") !== "1") { probe.runVideoStyles(false); probe.runReconnect() }
-                    probe.runProfiles(); probe.runRotation()
+                    probe.runMultiPin(); probe.runFreshSelection(); probe.runGeometry(); probe.runProfiles(); probe.runRotation()
                 }
                 console.log("CAMERA_CHECKS_PASSED")
             }
@@ -108,11 +120,455 @@ ShellRoot {
             directory = directory || Quickshell.env("CAMERA_TEST_CAPTURE_DIR")
             if (!directory) return
             var complete = false
+            // Pixel probe coordinates below are logical item coordinates. Use
+            // that same raster size even if the compositor chooses a scaled output.
             assertOk(item.grabToImage(function(result) {
                 assertOk(result.saveToFile(directory + "/" + name + ".png"), "save visual capture")
                 complete = true
-            }), "request visual capture")
+            }, Qt.size(Math.round(item.width), Math.round(item.height))), "request visual capture")
             eventually(function() { return complete }, 2000)
+        }
+        function runMultiPin() {
+            widget.open()
+            var first = find(widget, function(i) { return i.playbackStatus !== undefined })
+            eventually(function() { return first !== null }, 1000)
+            wait(200) // Let the new panel's initial FileViews settle.
+            first.config = {url: Qt.resolvedUrl("sample.mp4").toString(), username: "", password: ""}
+            first.configured = true; first.configuring = false
+            eventually(function() { return first.live }, 5000)
+            first.pinned = true
+            var button = find(widget, function(i) { return i.triggerPress !== undefined })
+            assertOk(button !== null, "real Widget bar button exists")
+            mouseClick(button)
+            wait(200)
+            assertOk(first.opened && first.pinned && first.live,
+                "bar click keeps pinned viewer open and playing")
+            var second = find(widget, function(i) { return i !== first && i.playbackStatus !== undefined && i.opened })
+            assertOk(second !== null, "bar click opens a separate selectable viewer")
+            second.close(); first.close()
+            eventually(function() { return widget.viewers.length === 0 }, 3000)
+            widget.open()
+            first = widget.panel
+            wait(200)
+            assertOk(first.configuring && !first.configured, "first-run empty library stays in Config")
+            first.runProfileOperation({action: "save", camera: {name: "Pin front", url: "rtsp://127.0.0.1:1/front", username: "front", password: ""}})
+            eventually(function() { return first.cameras.length === 1 }, 4000)
+            var firstId = first.selectedCameraId
+            first.resizeViewer(740, 580)
+            first.pinned = true
+            var geometryPopup = find(first, function(i) { return i.cardOrigin !== undefined })
+            geometryPopup.movePinned(140, 160)
+            eventually(function() { return first.canDispose }, 4000)
+            button.triggerPress(Qt.LeftButton)
+            second = widget.panel
+            eventually(function() { return second.cameras.length === 1 }, 4000)
+            assertOk(!second.configuring && second.streaming,
+                "fresh bar viewer shows saved camera after async profile load, not Config")
+            // Exercise the resulting video page with generated media, without
+            // overriding configured/configuring to bypass the async open path.
+            second.config = {url: Qt.resolvedUrl("sample.mp4").toString(), username: "", password: ""}
+            second.play()
+            eventually(function() { return second.live }, 5000)
+            second.runProfileOperation({action: "save", camera: {name: "Pin back", url: "rtsp://127.0.0.1:1/back", username: "back", password: ""}})
+            eventually(function() { return second.cameras.length === 2 }, 4000)
+            var secondId = second.selectedCameraId
+            wait(250)
+            equal(second.viewerWidth, 640, "new camera must not inherit another camera width")
+            equal(second.viewerHeight, 500, "new camera must not inherit another camera height")
+            var freshPopup = find(second, function(i) { return i.cardOrigin !== undefined })
+            second.pinned = true
+            equal(freshPopup.cardOrigin.x, freshPopup.anchoredOrigin.x, "new camera pins at bar anchor x")
+            equal(freshPopup.cardOrigin.y, freshPopup.anchoredOrigin.y, "new camera pins at bar anchor y")
+            eventually(function() { return first.cameras.length === 2 }, 4000)
+            equal(first.selectedCameraId, firstId, "global selection cannot change a pinned camera ID")
+            equal(first.config.username, "front", "pin keeps its own playback credentials")
+            second.pinned = true
+            button.triggerPress(Qt.LeftButton)
+            var third = widget.panel
+            eventually(function() { return third.cameras.length === 2 }, 4000)
+            third.editSettings(); third.selectCamera(0)
+            assertOk(third.configuring, "explicit Config opens after async load")
+            eventually(function() { return third.selectedCameraId === firstId }, 4000)
+            equal(second.selectedCameraId, secondId, "settings selection leaves other pin unchanged")
+            assertOk(third.configuring, "selectable viewer stays in settings")
+            first.editSettings()
+            find(first, function(i) { return i.objectName === "cameraName" }).text = "Unsaved pin draft"
+            third.runProfileOperation({action: "save", camera: {id: firstId, name: "Renamed pin", url: "rtsp://127.0.0.1:1/front", username: "front", password: ""}})
+            eventually(function() { return first.cameras[0].name === "Renamed pin" && !third.configuring }, 4000)
+            assertOk(first.configuring, "profile watcher does not eject explicitly opened Config")
+            equal(find(first, function(i) { return i.objectName === "cameraName" }).text,
+                "Unsaved pin draft", "profile watcher preserves active draft")
+            mouseClick(find(first, function(i) { return i.text === "Cancel" && i.clicked !== undefined }))
+            equal(first.selectedCameraId, firstId, "rename preserves pinned identity")
+            assertOk(!find(first, function(i) { return i.objectName === "cameraSelector" }).enabled,
+                "pinned camera selector cannot retarget its identity")
+            third.runProfileOperation({action: "save", camera: {id: secondId, name: "Pin back", url: "rtsp://127.0.0.1:1/back-updated", username: "updated", password: ""}})
+            eventually(function() { return second.config.username === "updated" }, 4000)
+            equal(second.selectedCameraId, secondId, "connection edits update the same pinned ID")
+            equal(second.config.url, "rtsp://127.0.0.1:1/back-updated", "pin receives changed address")
+            widget.closeForPopoutSwitch()
+            assertOk(!third.opened && first.opened && second.opened, "popup coordination leaves both pins open")
+            widget.open(); third = widget.panel
+            eventually(function() { return third.cameras.length === 2 }, 4000)
+            third.selectCamera(0)
+            assertOk(!third.configuring && third.streaming, "reopened Widget viewer shows saved camera")
+            eventually(function() { return third.selectedCameraId === firstId }, 4000)
+            third.pinned = true
+            assertOk(first.opened && third.opened && third.fixedCameraId === first.fixedCameraId,
+                "duplicate pins are independent viewers")
+            third.close()
+            assertOk(first.opened && second.opened, "closing duplicate leaves original pins open")
+            widget.open(); third = widget.panel
+            eventually(function() { return third.cameras.length === 2 }, 4000)
+            var firstPopup = find(first, function(i) { return i.cardOrigin !== undefined })
+            var secondPopup = find(second, function(i) { return i.cardOrigin !== undefined })
+            assertOk(!third.configuring && third.streaming, "fresh popup loads saved camera without test override")
+            var otherSizes = [second, third].map(function(viewer) {
+                return {viewer: viewer, width: viewer.viewerWidth, height: viewer.viewerHeight}
+            })
+            first.resizeViewer(720, 560)
+            eventually(function() { return !JSON.parse(first.playbackStatus()).sizePending }, 4000)
+            equal(first.sizeSaveError, "", "pin resize persisted")
+            wait(500) // Allow both other viewers' shared view.json watchers to reload.
+            var sizeErrors = []
+            for (var saved of otherSizes) {
+                if (saved.viewer.viewerWidth !== saved.width) sizeErrors.push("width " + saved.viewer.viewerWidth + " != " + saved.width)
+                if (saved.viewer.viewerHeight !== saved.height) sizeErrors.push("height " + saved.viewer.viewerHeight + " != " + saved.height)
+            }
+            assertOk(sizeErrors.length === 0, "resizing one pin must not resize other pin or selectable popup: " + sizeErrors.join("; "))
+            third.close()
+            button.triggerPress(Qt.LeftButton)
+            third = widget.panel
+            eventually(function() { return third.cameras.length === 2 && third.viewerWidth === first.viewerWidth
+                && third.viewerHeight === first.viewerHeight }, 4000)
+            assertOk(!third.configuring && third.streaming, "new viewer uses saved size and shows camera")
+            var pinSizes = [first, second].map(function(viewer) {
+                return {viewer: viewer, width: viewer.viewerWidth, height: viewer.viewerHeight}
+            })
+            third.resizeViewer(680, 520)
+            eventually(function() { return !JSON.parse(third.playbackStatus()).sizePending }, 4000)
+            wait(500)
+            for (var saved of pinSizes) {
+                equal(saved.viewer.viewerWidth, saved.width, "selectable resize leaves pin width independent")
+                equal(saved.viewer.viewerHeight, saved.height, "selectable resize leaves pin height independent")
+            }
+            var secondOrigin = Qt.point(secondPopup.cardOrigin.x, secondPopup.cardOrigin.y)
+            firstPopup.movePinned(firstPopup.cardOrigin.x + 100, firstPopup.cardOrigin.y + 100)
+            eventually(function() { return !JSON.parse(first.playbackStatus()).positionPending }, 4000)
+            wait(300)
+            equal(secondPopup.cardOrigin.x, secondOrigin.x, "moving one pin does not move another horizontally")
+            equal(secondPopup.cardOrigin.y, secondOrigin.y, "moving one pin does not move another vertically")
+            for (var viewer of [first, second]) {
+                viewer.config = {url: Qt.resolvedUrl(viewer === first ? "sample.mp4" : "rotation.mp4").toString(), username: "", password: ""}
+                viewer.play()
+            }
+            eventually(function() { return first.live && second.live }, 5000)
+            first.toggleAppearance()
+            var firstRotation = find(first, function(i) { return i.objectName === "videoRotation" })
+            firstRotation.currentIndex = 1
+            equal(second.videoRotation, 0, "rotation preview stays local to one pin")
+            mouseClick(find(first, function(i) { return i.objectName === "applyStyle" }))
+            eventually(function() { return !first.editingAppearance && first.videoRotation === 90 }, 4000)
+            equal(second.videoRotation, 0, "rotation Apply saves only that pinned camera")
+            second.toggleAppearance()
+            find(second, function(i) { return i.objectName === "videoRotation" }).currentIndex = 3
+            find(second, function(i) { return i.objectName === "videoStyle" }).currentIndex = 0
+            mouseClick(find(second, function(i) { return i.objectName === "applyStyle" }))
+            eventually(function() { return !second.editingAppearance && first.videoStyle === "original" }, 4000)
+            equal(first.videoRotation, 90, "second pin Apply preserves first pin rotation")
+            equal(second.videoRotation, 270, "second pin stores its own rotation")
+            var frameCount = second.framesReceived
+            first.toggleAudio()
+            assertOk(JSON.parse(second.playbackStatus()).muted, "audio mute is independent")
+            first.close()
+            wait(300)
+            assertOk(second.live && second.framesReceived > frameCount, "closing one pin preserves other decoder")
+            second.pinned = false
+            equal(widget.panel, second, "unpin adopts viewer as selectable popup")
+            assertOk(!third.opened, "unpin replaces only existing selectable popup")
+            button.triggerPress(Qt.LeftButton)
+            eventually(function() { return widget.viewers.length === 0 }, 3000)
+            button.triggerPress(Qt.LeftButton)
+            third = widget.panel
+            eventually(function() { return third.cameras.length === 2 }, 4000)
+            third.pinned = true
+            button.triggerPress(Qt.LeftButton)
+            var editor = widget.panel
+            eventually(function() { return editor.cameras.length === 2 && editor.canDispose }, 4000)
+            editor.runProfileOperation({action: "delete", id: firstId})
+            eventually(function() { return !third.opened && editor.cameras.length === 1 && editor.canDispose }, 4000)
+            equal(editor.selectedCameraId, secondId, "deleted pin closes without retargeting")
+            editor.runProfileOperation({action: "delete", id: secondId})
+            eventually(function() { return editor.cameras.length === 0 }, 4000)
+            editor.close()
+            eventually(function() { return widget.viewers.length === 0 }, 3000)
+            console.log("PASS: real Widget async saved-profile open/reopen, Config drafts, independent resize/default size, multi-pin identity, settings, rename/delete, playback/audio, unpin, cleanup")
+        }
+        function runFreshSelection() {
+            // runMultiPin leaves an empty temporary library; use real saves and
+            // the real bar button rather than injecting a panel's loaded state.
+            function add(name) {
+                panel.runProfileOperation({action: "save", camera: {name: name,
+                    url: "rtsp://127.0.0.1:1/selection", username: "", password: ""}})
+                eventually(function() { return panel.cameras.some(function(c) { return c.name === name }) && panel.canDispose }, 4000)
+                return panel.selectedCameraId
+            }
+            var firstId = add("Selection first"), secondId = add("Selection second")
+            var button = find(widget, function(i) { return i.triggerPress !== undefined })
+            button.triggerPress(Qt.LeftButton)
+            var pin = widget.panel
+            eventually(function() { return pin.selectedCameraId === secondId }, 4000)
+            pin.pinned = true
+            button.triggerPress(Qt.LeftButton)
+            var viewer = widget.panel
+            eventually(function() { return viewer.cameras.length === 2 && viewer.canDispose }, 4000)
+            equal(viewer.selectedCameraId, firstId, "fresh bar viewer automatically selects the other saved camera")
+            equal(pin.selectedCameraId, secondId, "automatic selection leaves pin unchanged")
+            var thirdId = add("Selection third")
+            eventually(function() { return viewer.cameras.length === 3 && viewer.selectedCameraId === thirdId }, 4000)
+            viewer.selectCamera(1)
+            eventually(function() { return viewer.selectedCameraId === secondId && viewer.canDispose }, 4000)
+            viewer.close()
+            button.triggerPress(Qt.LeftButton)
+            viewer = widget.panel
+            eventually(function() { return viewer.cameras.length === 3 && viewer.canDispose }, 4000)
+            equal(viewer.selectedCameraId, firstId, "three cameras choose first list entry, not cyclic next after middle pin")
+            viewer.pinned = true
+            var firstPin = viewer
+            button.triggerPress(Qt.LeftButton)
+            viewer = widget.panel
+            eventually(function() { return viewer.cameras.length === 3 && viewer.canDispose }, 4000)
+            equal(viewer.selectedCameraId, thirdId, "fresh viewer skips ALL open pinned IDs")
+            viewer.pinned = true
+            var thirdPin = viewer
+            button.triggerPress(Qt.LeftButton)
+            viewer = widget.panel
+            eventually(function() { return viewer.cameras.length === 3 && viewer.canDispose }, 4000)
+            equal(viewer.selectedCameraId, thirdId, "all-pinned library keeps remembered selection")
+            viewer.selectCamera(1)
+            eventually(function() { return viewer.selectedCameraId === secondId && viewer.canDispose }, 4000)
+            viewer.editSettings()
+            find(viewer, function(i) { return i.objectName === "cameraName" }).text = "Selection draft"
+            panel.runProfileOperation({action: "save", camera: {id: secondId, name: "Selection renamed",
+                url: "rtsp://127.0.0.1:1/selection", username: "", password: ""}})
+            eventually(function() { return viewer.cameras[1].name === "Selection renamed" && panel.canDispose }, 4000)
+            wait(300)
+            equal(viewer.selectedCameraId, secondId, "watchers do not undo manual selection")
+            assertOk(viewer.configuring, "watchers preserve explicit Config")
+            equal(find(viewer, function(i) { return i.objectName === "cameraName" }).text,
+                "Selection draft", "watchers preserve Config draft after auto selection")
+            equal(pin.selectedCameraId, secondId, "rename retains pinned stable ID")
+            viewer.close(); pin.close(); firstPin.close(); thirdPin.close()
+            eventually(function() { return widget.viewers.length === 0 }, 3000)
+            // With no pins, opening must not prefer the first saved entry.
+            panel.runProfileOperation({action: "select", id: secondId})
+            eventually(function() { return panel.selectedCameraId === secondId && panel.canDispose }, 4000)
+            button.triggerPress(Qt.LeftButton)
+            viewer = widget.panel
+            eventually(function() { return viewer.cameras.length === 3 && viewer.canDispose }, 4000)
+            equal(viewer.selectedCameraId, secondId, "no pins restore remembered camera")
+            viewer.close()
+            for (var id of [secondId, thirdId]) {
+                panel.runProfileOperation({action: "delete", id: id})
+                eventually(function() { return !panel.cameras.some(function(c) { return c.id === id }) && panel.canDispose }, 4000)
+            }
+            button.triggerPress(Qt.LeftButton)
+            pin = widget.panel
+            eventually(function() { return pin.cameras.length === 1 }, 4000)
+            pin.pinned = true
+            button.triggerPress(Qt.LeftButton)
+            viewer = widget.panel
+            eventually(function() { return viewer.cameras.length === 1 && viewer.canDispose }, 4000)
+            equal(viewer.selectedCameraId, firstId, "single pinned camera falls back to remembered camera")
+            viewer.close(); pin.close()
+            eventually(function() { return widget.viewers.length === 0 }, 3000)
+            panel.runProfileOperation({action: "delete", id: firstId})
+            eventually(function() { return panel.cameras.length === 0 && panel.canDispose }, 4000)
+            console.log("PASS: fresh bar selection: two/three cameras, saved list order, all pins skipped, all-pinned/single/no-pin fallbacks, manual selection, Config/watchers, stable rename")
+        }
+        function runGeometryRestart() {
+            var ids = JSON.parse(Quickshell.env("CAMERA_TEST_GEOMETRY_RESTART"))
+            widget.open(); var viewer = widget.panel
+            // A fresh layer surface can land on another compositor output.
+            // Restore the recorded scope explicitly rather than reading a
+            // different monitor's correctly absent position file.
+            viewer.geometryMonitorName = ids.screen
+            // Keep the synthetic restart probe immune to outside-click dismissal
+            // during asynchronous geometry loading, as in the other pin checks.
+            viewer.pinned = true
+            eventually(function() { return viewer.selectedCameraId === ids.a && viewer.viewerWidth === 710 }, 4000)
+            var popup = find(viewer, function(i) { return i.cardOrigin !== undefined })
+            eventually(function() { return popup.savedPosition !== null }, 4000)
+            equal(popup.cardOrigin.x, 150, "new shell restores A x")
+            equal(popup.cardOrigin.y, 170, "new shell restores A y")
+            viewer.pinned = false; viewer.selectCamera(1)
+            eventually(function() { return viewer.selectedCameraId === ids.b && viewer.viewerWidth === 670 }, 4000)
+            viewer.pinned = true
+            eventually(function() { return popup.savedPosition !== null }, 4000)
+            equal(popup.cardOrigin.x, 230, "new shell restores B x")
+            equal(popup.cardOrigin.y, 250, "new shell restores B y")
+            viewer.close()
+            eventually(function() { return widget.viewers.length === 0 }, 4000)
+            console.log("PASS: per-camera geometry restored in a separate shell process")
+        }
+        function runGeometry() {
+            widget.open()
+            var viewer = widget.panel
+            equal(viewer.cameraToken("front/雪 !'()-"), "front%2F%E9%9B%AA%20!'()%2D", "QML geometry encoding matches Python")
+            eventually(function() { return viewer.cameras.length === 0 }, 4000)
+            function add(name) {
+                viewer.runProfileOperation({action: "save", camera: {name: name,
+                    url: "rtsp://127.0.0.1:1/geometry", username: "", password: ""}})
+                eventually(function() { return viewer.cameras.some(function(c) { return c.name === name }) && viewer.canDispose }, 4000)
+                return viewer.selectedCameraId
+            }
+            var a = add("Geometry A"), b = add("Geometry B")
+            var popup = find(viewer, function(i) { return i.cardOrigin !== undefined })
+            function select(index) {
+                viewer.pinned = false
+                viewer.selectCamera(index)
+                eventually(function() { return viewer.selectedCameraIndex === index && viewer.canDispose }, 4000)
+                viewer.pinned = true
+            }
+            select(0)
+            // Seed stale disk geometry, then return to the same ID while its
+            // newer geometry is queued or deliberately held in a real Process.
+            viewer.resizeViewer(640, 500); popup.movePinned(50, 60)
+            eventually(function() { return viewer.canDispose }, 4000)
+            var sizeProcess = find(viewer, function(i) { return i.command && i.command.indexOf("--view-size") >= 0 })
+            var positionProcess = find(viewer, function(i) { return i.command && i.command.indexOf("--position") >= 0 })
+            var originalSizeCommand = sizeProcess.command.slice()
+            var originalPositionCommand = positionProcess.command.slice()
+            function hold(command) {
+                return ["python3", "-c", "import os,sys,time; time.sleep(1.5); os.execvp(sys.argv[1],sys.argv[1:])"].concat(command)
+            }
+            function stopDebounce() {
+                // Both production geometry debounce timers are 300ms.
+                for (var item of viewer.data) if (item.interval === 300 && item.stop) item.stop()
+            }
+            function switchBeforeSave(index) {
+                viewer.pinned = false; viewer.selectCamera(index)
+                eventually(function() { return viewer.selectedCameraIndex === index }, 4000)
+                viewer.pinned = true
+            }
+            function latestGeometry(label, width, height, x, y) {
+                equal(viewer.viewerWidth, width, label + " width")
+                equal(viewer.viewerHeight, height, label + " height")
+                equal(popup.cardOrigin.x, x, label + " x")
+                equal(popup.cardOrigin.y, y, label + " y")
+            }
+            for (var inflight of [false, true]) {
+                var w = inflight ? 750 : 730, h = inflight ? 590 : 570
+                var x = inflight ? 120 : 110, y = inflight ? 140 : 130
+                sizeProcess.command = hold(originalSizeCommand)
+                positionProcess.command = hold(originalPositionCommand)
+                viewer.resizeViewer(w, h); popup.movePinned(x, y)
+                stopDebounce()
+                if (inflight) {
+                    viewer.saveViewerSize(); viewer.saveViewerPosition()
+                    assertOk(sizeProcess.running && positionProcess.running, "real geometry saves held in flight")
+                }
+                switchBeforeSave(1); switchBeforeSave(0)
+                latestGeometry("same-ID switchback immediately " + inflight, w, h, x, y)
+                wait(200) // Give stale FileViews time to deliver their result.
+                latestGeometry("same-ID switchback after readers " + inflight, w, h, x, y)
+                var monitor = viewer.geometryMonitorName
+                var delayedMonitor = "Geometry delayed monitor " + inflight
+                viewer.geometryMonitorName = delayedMonitor
+                wait(100)
+                equal(popup.savedPosition, null, "unvisited monitor has no local position")
+                popup.movePinned(180, 200); stopDebounce()
+                viewer.geometryMonitorName = monitor
+                latestGeometry("monitor switchback immediately " + inflight, w, h, x, y)
+                wait(200)
+                latestGeometry("monitor switchback after readers " + inflight, w, h, x, y)
+                viewer.saveViewerSize(); viewer.saveViewerPosition()
+                eventually(function() { return viewer.canDispose }, 6000)
+                latestGeometry("switchback after delayed saves " + inflight, w, h, x, y)
+                viewer.geometryMonitorName = delayedMonitor
+                equal(popup.cardOrigin.x, 180, "second monitor restores its local snapshot")
+                equal(popup.cardOrigin.y, 200, "second monitor restores its local y")
+                viewer.geometryMonitorName = monitor
+            }
+            sizeProcess.command = originalSizeCommand
+            positionProcess.command = originalPositionCommand
+            console.log("PASS: real Widget queued/in-flight same-ID and same-monitor switchbacks, immediate/async/post-save geometry")
+            viewer.resizeViewer(730, 570); popup.movePinned(110, 130)
+            // Selection may finish before debounce; the snapshot must keep A's ID.
+            viewer.pinned = false; viewer.selectCamera(1)
+            eventually(function() { return viewer.selectedCameraId === b }, 4000)
+            viewer.pinned = true
+            viewer.resizeViewer(670, 510); popup.movePinned(230, 250)
+            viewer.close() // Flush B before the debounce expires, then destroy/recreate.
+            eventually(function() { return widget.viewers.length === 0 }, 4000)
+            widget.open(); viewer = widget.panel
+            eventually(function() { return viewer.selectedCameraId === b }, 4000)
+            viewer.pinned = true // May precede the async geometry read.
+            popup = find(viewer, function(i) { return i.cardOrigin !== undefined })
+            eventually(function() { return viewer.viewerWidth === 670 && popup.savedPosition !== null }, 4000)
+            equal(viewer.viewerHeight, 510, "B height survives recreation")
+            equal(popup.cardOrigin.x, 230, "B x survives recreation")
+            equal(popup.cardOrigin.y, 250, "B y survives recreation")
+            select(0)
+            eventually(function() { return viewer.viewerWidth === 730 && popup.savedPosition !== null }, 4000)
+            equal(viewer.viewerHeight, 570, "A height survives rapid switch")
+            equal(popup.cardOrigin.x, 110, "A x uses its own ID")
+            equal(popup.cardOrigin.y, 130, "A y uses its own ID")
+            // A duplicate's persistence must not live-teleport or resize this pin.
+            widget.open(); var duplicate = widget.panel
+            eventually(function() { return duplicate.cameras.length === 2 && duplicate.canDispose }, 4000)
+            duplicate.selectCamera(0)
+            eventually(function() { return duplicate.selectedCameraId === a && duplicate.viewerWidth === 730 }, 4000)
+            duplicate.pinned = true
+            var duplicatePopup = find(duplicate, function(i) { return i.cardOrigin !== undefined })
+            duplicate.resizeViewer(710, 550); duplicatePopup.movePinned(150, 170)
+            eventually(function() { return duplicate.canDispose }, 4000)
+            equal(viewer.viewerWidth, 730, "duplicate write does not resize existing pin")
+            equal(popup.cardOrigin.x, 110, "duplicate write does not teleport existing pin")
+            duplicate.runProfileOperation({action: "save", camera: {id: a, name: "Geometry renamed",
+                url: "rtsp://127.0.0.1:1/geometry", username: "", password: ""}})
+            eventually(function() { return duplicate.cameras[0].name === "Geometry renamed" && duplicate.canDispose }, 4000)
+            viewer.close(); duplicate.close()
+            eventually(function() { return widget.viewers.length === 0 }, 4000)
+            widget.open(); viewer = widget.panel
+            eventually(function() { return viewer.selectedCameraId === a && viewer.viewerWidth === 710 }, 4000)
+            viewer.pinned = true
+            popup = find(viewer, function(i) { return i.cardOrigin !== undefined })
+            eventually(function() { return popup.savedPosition !== null }, 4000)
+            equal(popup.cardOrigin.x, 150, "rename restores same stable geometry ID")
+            equal(popup.cardOrigin.y, 170, "rename restores y")
+            var realMonitor = viewer.geometryMonitorName
+            assertOk(typeof realMonitor === "string" && realMonitor.length > 0, "geometry has explicit monitor scope")
+            viewer.geometryMonitorName = "Geometry test monitor/2"
+            wait(150)
+            equal(viewer.viewerWidth, 710, "monitor switch preserves camera size")
+            equal(popup.savedPosition, null, "other monitor does not inherit position")
+            equal(popup.cardOrigin.x, popup.anchoredOrigin.x, "unsaved monitor uses bar anchor")
+            popup.movePinned(190, 210)
+            eventually(function() { return viewer.canDispose }, 4000)
+            viewer.geometryMonitorName = realMonitor
+            eventually(function() { return popup.savedPosition !== null }, 4000)
+            equal(popup.cardOrigin.x, 150, "returning monitor restores its own x")
+            equal(popup.cardOrigin.y, 170, "returning monitor restores its own y")
+            viewer.resetGeometry()
+            viewer.resizeViewer(700, 540); popup.movePinned(160, 180)
+            wait(200)
+            equal(viewer.viewerWidth, 700, "late async size load cannot overwrite user's resize")
+            equal(popup.cardOrigin.x, 160, "late async position load cannot overwrite user's move")
+            viewer.resizeViewer(710, 550); popup.movePinned(150, 170)
+            eventually(function() { return viewer.canDispose }, 4000)
+            console.log("GEOMETRY_FILES " + JSON.stringify({a: a, b: b, screen: popup.screen.name}))
+            popup.savedPosition = Qt.point(32768, 32768)
+            viewer.pinned = false; viewer.pinned = true
+            assertOk(popup.cardOrigin.x + popup.contentWidth <= popup.screenW
+                && popup.cardOrigin.y + popup.contentHeight <= popup.screenH, "camera position clamps to monitor")
+            viewer.close()
+            eventually(function() { return widget.viewers.length === 0 }, 4000)
+            for (var id of [a, b]) {
+                panel.runProfileOperation({action: "delete", id: id})
+                eventually(function() { return !panel.cameras.some(function(c) { return c.id === id }) && panel.canDispose }, 4000)
+            }
+            console.log("PASS: per-camera geometry, queued switch/close snapshots, recreate, early pin, duplicate isolation, rename, clamping")
         }
         function runProfiles() {
             panel.open()
@@ -681,10 +1137,12 @@ ShellRoot {
         }
         function state() { return JSON.parse(panel.playbackStatus()) }
         function runReconnect() {
+            // Keep synthetic recovery waits immune to outside-click dismissal.
             panel.config = {url: "rtsp://127.0.0.1:1/live", username: "", password: ""}
             panel.configured = true
             panel.configuring = false
             panel.open()
+            panel.pinned = true
             eventually(function() { return state().reconnectPending }, 4000)
             equal(state().retryDelay, 2000, "first retry delay")
             eventually(function() { return state().retryAttempt >= 2 }, 5000)
@@ -711,6 +1169,7 @@ ShellRoot {
             wait(2200)
             assertOk(!state().playing && !state().timeoutRunning, "closed viewer remains stopped")
             panel.open()
+            panel.pinned = true
             eventually(function() { return state().reconnectPending }, 4000)
             panel.config = {url: Qt.resolvedUrl("sample.mp4").toString(), username: "", password: ""}
             panel.play(false)
