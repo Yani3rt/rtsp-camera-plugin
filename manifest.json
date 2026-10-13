@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "yani.camera",
   "name": "RTSP Camera",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "author": "Yani",
   "license": "MIT",
   "description": "View RTSP cameras from the bar with Omarchy colors, pixel effects, animated overlays, and audio controls.",

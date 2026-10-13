@@ -38,6 +38,10 @@ Panel {
     readonly property var overlayStyles: ["default", "coder", "hacker"]
     property string appearanceMessage: ""
     property bool editingAppearance: false
+    property var cameraRotations: ({})
+    readonly property int videoRotation: Object.prototype.hasOwnProperty.call(cameraRotations, selectedCameraId)
+        ? cameraRotations[selectedCameraId] : 0
+    onSelectedCameraIdChanged: editingAppearance = false
     readonly property var videoStyles: ["original", "theme", "pixel", "theme-pixel"]
     property var pendingPosition: null
     property int retryAttempt: 0
@@ -71,8 +75,30 @@ Panel {
         tintSlider.value = tintStrength
         pixelSlider.value = pixelSize
         overlayChooser.currentIndex = overlayStyles.indexOf(overlayStyle)
+        rotationChooser.currentIndex = videoRotation / 90
         appearanceMessage = ""
         editingAppearance = true
+    }
+    function applyAppearance(saved) {
+        var savedPixelSize = saved.pixelSize === undefined ? 3 : saved.pixelSize
+        var savedOverlay = saved.overlay === undefined ? "default" : saved.overlay
+        if (savedOverlay === "off") savedOverlay = "default"
+        else if (savedOverlay === "hud") savedOverlay = "coder"
+        else if (savedOverlay === "terminal") savedOverlay = "hacker"
+        var rotations = saved.rotations === undefined ? {} : saved.rotations
+        if (videoStyles.indexOf(saved.style) < 0 || !Number.isInteger(saved.strength)
+            || saved.strength < 0 || saved.strength > 100
+            || !Number.isInteger(savedPixelSize) || savedPixelSize < 1 || savedPixelSize > 16
+            || overlayStyles.indexOf(savedOverlay) < 0
+            || !rotations || typeof rotations !== "object" || Array.isArray(rotations)) throw new Error()
+        Object.keys(rotations).forEach(function(id) {
+            if (!id || id.length > 64 || [0, 90, 180, 270].indexOf(rotations[id]) < 0) throw new Error()
+        })
+        videoStyle = saved.style
+        tintStrength = saved.strength
+        pixelSize = savedPixelSize
+        overlayStyle = savedOverlay
+        cameraRotations = rotations
     }
     onConfiguringChanged: if (configuring) editingAppearance = false
     function applyLibrary(data) {
@@ -232,20 +258,7 @@ Panel {
         onFileChanged: reload()
         onLoaded: {
             try {
-                var saved = JSON.parse(text())
-                var savedPixelSize = saved.pixelSize === undefined ? 3 : saved.pixelSize
-                var savedOverlay = saved.overlay === undefined ? "default" : saved.overlay
-                if (savedOverlay === "off") savedOverlay = "default"
-                else if (savedOverlay === "hud") savedOverlay = "coder"
-                else if (savedOverlay === "terminal") savedOverlay = "hacker"
-                if (root.videoStyles.indexOf(saved.style) < 0 || typeof saved.strength !== "number"
-                    || !Number.isInteger(saved.strength) || saved.strength < 0 || saved.strength > 100
-                    || !Number.isInteger(savedPixelSize) || savedPixelSize < 1 || savedPixelSize > 16
-                    || root.overlayStyles.indexOf(savedOverlay) < 0) return
-                root.videoStyle = saved.style
-                root.tintStrength = saved.strength
-                root.pixelSize = savedPixelSize
-                root.overlayStyle = savedOverlay
+                root.applyAppearance(JSON.parse(text()))
             } catch (error) { /* Missing or invalid appearance keeps the default. */ }
         }
     }
@@ -255,17 +268,15 @@ Panel {
         command: ["python3", Qt.resolvedUrl("config.py").toString().replace(/^file:\/\//, ""), "--appearance"]
         stdinEnabled: true
         onStarted: write(pending + "\n")
+        stdout: StdioCollector { id: appearanceResult }
         onExited: function(code) {
             if (code !== 0) {
-                root.appearanceMessage = "Could not save video style. Try again."
+                root.appearanceMessage = "Could not save video appearance. Try again."
                 return
             }
             // Commit the exact submitted preview before hiding the editor.
-            var saved = JSON.parse(pending)
-            root.videoStyle = saved.style
-            root.tintStrength = saved.strength
-            root.pixelSize = saved.pixelSize
-            root.overlayStyle = saved.overlay
+            try { root.applyAppearance(JSON.parse(appearanceResult.text)) }
+            catch (error) { root.appearanceMessage = "Saved video appearance could not be read."; return }
             root.appearanceMessage = ""
             root.editingAppearance = false
             appearanceFile.reload()
@@ -639,6 +650,7 @@ Panel {
                             clip: true
                             VideoOutput {
                                 id: video
+                                orientation: root.editingAppearance ? rotationChooser.currentIndex * 90 : root.videoRotation
                                 anchors.fill: parent
                                 anchors.margins: 1
                                 fillMode: VideoOutput.PreserveAspectFit
@@ -762,6 +774,58 @@ Panel {
                                         id: appearanceColumn
                                         width: appearanceScroll.availableWidth
                                         spacing: 12
+                                        Label { text: "Rotation · this camera"; color: root.foreground }
+                                        Controls.ComboBox {
+                                            id: rotationChooser
+                                            objectName: "videoRotation"
+                                            Layout.fillWidth: true
+                                            model: ["0° · Original", "90° · Clockwise", "180° · Upside down", "270° · Counterclockwise"]
+                                            currentIndex: root.videoRotation / 90
+                                            enabled: !appearanceWriter.running && root.selectedCameraId !== ""
+                                            Accessible.name: "Video rotation for this camera"
+                                            implicitHeight: 32
+                                            contentItem: Text {
+                                                text: rotationChooser.displayText
+                                                color: Color.popups.text
+                                                verticalAlignment: Text.AlignVCenter
+                                                leftPadding: 10; rightPadding: 28
+                                            }
+                                            background: Rectangle {
+                                                color: Color.popups.background
+                                                border.color: rotationChooser.activeFocus ? Color.accent : Color.popups.border
+                                            }
+                                            indicator: Text {
+                                                x: rotationChooser.width - width - 10
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: "\u2304"; color: Color.popups.text
+                                            }
+                                            delegate: Controls.ItemDelegate {
+                                                required property string modelData
+                                                required property int index
+                                                width: rotationChooser.width
+                                                text: modelData
+                                                highlighted: rotationChooser.highlightedIndex === index
+                                                contentItem: Text { text: parent.text; color: Color.popups.text; verticalAlignment: Text.AlignVCenter }
+                                                background: Rectangle {
+                                                    color: parent.hovered || parent.highlighted
+                                                        ? Style.hoverFillFor(Color.popups.text, Color.accent) : Color.popups.background
+                                                }
+                                            }
+                                            popup: Controls.Popup {
+                                                y: rotationChooser.height
+                                                width: rotationChooser.width
+                                                implicitHeight: rotationList.contentHeight + 2
+                                                padding: 1
+                                                contentItem: ListView {
+                                                    id: rotationList
+                                                    clip: true
+                                                    implicitHeight: contentHeight
+                                                    model: rotationChooser.popup.visible ? rotationChooser.delegateModel : null
+                                                    currentIndex: rotationChooser.highlightedIndex
+                                                }
+                                                background: Rectangle { color: Color.popups.background; border.color: Color.popups.border }
+                                            }
+                                        }
                                         Label { text: "Video style · all cameras"; color: root.foreground }
                                         Controls.ComboBox {
                                             id: videoStyleChooser
@@ -938,7 +1002,7 @@ Panel {
                                     id: appearanceFooter
                                     Layout.fillWidth: true
                                     Label {
-                                        text: root.appearanceMessage || "Previewing live · Apply to save for all cameras."
+                                        text: root.appearanceMessage || "Rotation: this camera · Theme: all cameras. Apply to save."
                                         color: root.foreground
                                         font.pixelSize: 12
                                         wrapMode: Text.WordWrap
@@ -950,9 +1014,14 @@ Panel {
                                         enabled: !appearanceWriter.running
                                         onClicked: {
                                             root.appearanceMessage = ""
-                                            appearanceWriter.pending = JSON.stringify({style: root.videoStyles[videoStyleChooser.currentIndex],
+                                            var settings = {style: root.videoStyles[videoStyleChooser.currentIndex],
                                                 strength: Math.round(tintSlider.value), pixelSize: Math.round(pixelSlider.value),
-                                                overlay: root.overlayStyles[overlayChooser.currentIndex]})
+                                                overlay: root.overlayStyles[overlayChooser.currentIndex]}
+                                            if (root.selectedCameraId) {
+                                                settings.cameraId = root.selectedCameraId
+                                                settings.rotation = rotationChooser.currentIndex * 90
+                                            }
+                                            appearanceWriter.pending = JSON.stringify(settings)
                                             appearanceWriter.running = true
                                         }
                                     }

@@ -69,6 +69,38 @@ def validate_position(data):
     return {key: data[key] for key in ("screen", "x", "y")}
 
 
+def update_appearance(data, directory):
+    appearance = validate_appearance(data)
+    has_rotation = "cameraId" in data or "rotation" in data
+    if has_rotation:
+        identity, rotation = data.get("cameraId"), data.get("rotation")
+        if (not isinstance(identity, str) or not identity or len(identity) > 64
+                or type(rotation) is not int or rotation not in (0, 90, 180, 270)):
+            raise ValueError("Choose a camera and a rotation of 0, 90, 180, or 270 degrees.")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(directory / ".appearance.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            saved = json.loads((directory / "appearance.json").read_text())
+        except FileNotFoundError:
+            saved = {}
+        if not isinstance(saved, dict):
+            raise ValueError("Invalid saved video appearance.")
+        rotations = saved.get("rotations", {})
+        if not isinstance(rotations, dict) or any(
+            not identity or len(identity) > 64 or type(angle) is not int
+            or angle not in (0, 90, 180, 270) for identity, angle in rotations.items()
+        ):
+            raise ValueError("Invalid saved camera rotations.")
+        if has_rotation:
+            rotations[identity] = rotation
+        if rotations:
+            appearance["rotations"] = rotations
+        save(appearance, directory, "appearance.json")
+        return appearance
+
+
 def position_filename(screen):
     # Match QML's encodeURIComponent, keeping monitor names within one filename.
     return "position-" + quote(screen, safe="-_.!~*'()") + ".json"
@@ -166,12 +198,15 @@ if __name__ == "__main__":
             library = update_library(json.loads(sys.stdin.readline()), base / "rtsp-camera")
             print(json.dumps(library))
             sys.exit(0)
+        if sys.argv[1:] == ["--appearance"]:
+            appearance = update_appearance(json.loads(sys.stdin.readline()), base / "rtsp-camera")
+            print(json.dumps(appearance))
+            sys.exit(0)
         size_only = sys.argv[1:] == ["--view-size"]
         position_only = sys.argv[1:] == ["--position"]
-        appearance_only = sys.argv[1:] == ["--appearance"]
-        validator = validate_appearance if appearance_only else validate_position if position_only else validate_size if size_only else validate
+        validator = validate_position if position_only else validate_size if size_only else validate
         data = validator(json.loads(sys.stdin.readline()))
-        filename = "appearance.json" if appearance_only else position_filename(data["screen"]) if position_only else "view.json" if size_only else "config.json"
+        filename = position_filename(data["screen"]) if position_only else "view.json" if size_only else "config.json"
         save(data, base / "rtsp-camera", filename)
     except ValueError as error:
         # Only our validation messages are safe to display; JSON errors are generic.

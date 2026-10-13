@@ -76,7 +76,16 @@ be installed. FFmpeg, QtTest, and Qt Shader Tools are development tools only
 
 Click the **palette icon** at the bottom-right of the feed to open the theme
 section below the video. Choose **Video style** and adjust its sliders while the
-feed keeps playing; changes preview immediately in this viewer:
+feed keeps playing; changes preview immediately in this viewer.
+
+**Rotation · this camera** offers **0°**, **90° clockwise**, **180°**, and
+**270° counterclockwise**. Rotation previews live and **Apply** remembers it for
+the selected camera across monitors and restarts. Cameras without a saved rotation
+use 0°. Renaming a camera keeps its rotation. The video keeps its proportions;
+overlays and controls stay upright and inside the displayed image. Rotation uses
+Qt's video renderer without re-encoding the stream.
+
+The video styles are:
 
 - **Original**: unfiltered video, with no effect texture allocated.
 - **Omarchy** (first-run default): gently blends the image into the current Omarchy palette.
@@ -119,11 +128,12 @@ The Hackerman sweep pauses in place while offline and resumes when video returns
 Other decorations continue while visible. Hiding the overlay stops its animations,
 and closing the viewer releases it. Default's corner borders need no animation clock.
 
-Appearance applies to every camera and monitor and is saved separately in
+Video style, tint, pixel size, and overlay apply to every camera and monitor;
+rotation is saved per camera. These settings are stored in
 `~/.config/rtsp-camera/appearance.json` (or under `$XDG_CONFIG_HOME`). **Apply** saves
 the preview and completely hides the theme section, returning the space to the
 video. Click the palette icon again to reopen it with the saved values. Dismissing
-the section with that icon, closing the viewer, or opening camera **Config** discards
+the section with that icon, closing the viewer, switching cameras, or opening camera **Config** discards
 unapplied changes. Other monitors see only the applied settings. Theme controls no
 longer appear in Config. Closing the viewer or opening Config unloads the effect;
 opening the theme section keeps playback and audio running.
@@ -186,6 +196,10 @@ python3 tests/run_qml_checks.py
 For layout-only changes, use `python3 tests/run_qml_checks.py --ui-only` to skip
 the playback recovery checks. This still checks rendered effect pixels, live palette
 updates, appearance persistence, and the settings controls.
+
+Use `python3 tests/run_qml_checks.py --rotation-only` for rotation checks with a
+generated four-color video, covering every video style, saved camera rotations,
+preview cancellation, and resized controls.
 
 `python3 tests/run_qml_checks.py --benchmark` compares process CPU usage and received
 frame rate for all four styles using a generated 320×240, 10 fps clip. It is a small

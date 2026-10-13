@@ -9,10 +9,51 @@ import tempfile
 import unittest
 
 from config import save, validate, validate_size, validate_position, position_filename
-from config import normalize_library, update_library, validate_appearance
+from config import normalize_library, update_library, validate_appearance, update_appearance
 
 
 class SettingsTests(unittest.TestCase):
+    def test_concurrent_rotation_updates_preserve_both_cameras(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            def apply(identity, rotation):
+                update_appearance(dict(style="theme", strength=35, cameraId=identity, rotation=rotation), directory)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(apply, "front", 90), executor.submit(apply, "back", 270)]
+                for future in futures:
+                    future.result()
+            saved = json.loads((directory / "appearance.json").read_text())
+            self.assertEqual(saved["rotations"], {"front": 90, "back": 270})
+
+    def test_rotation_saves_per_camera_without_losing_other_rotations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "rtsp-camera"
+            environment = dict(os.environ, XDG_CONFIG_HOME=temporary)
+            style = dict(style="theme", strength=35, pixelSize=3, overlay="default")
+            def apply(**extra):
+                return subprocess.run([sys.executable, str(Path(__file__).with_name("config.py")), "--appearance"],
+                                      input=json.dumps(dict(style, **extra)) + "\n", text=True,
+                                      capture_output=True, env=environment)
+            self.assertEqual(apply(cameraId="front", rotation=90).returncode, 0)
+            self.assertEqual(apply(cameraId="back", rotation=270).returncode, 0)
+            # An older client saving global appearance must preserve rotations.
+            self.assertEqual(apply().returncode, 0)
+            saved = json.loads((directory / "appearance.json").read_text())
+            self.assertEqual(saved.get("rotations"), {"front": 90, "back": 270})
+            for rotation in (0, 90, 180, 270):
+                self.assertEqual(apply(cameraId="front", rotation=rotation).returncode, 0)
+                saved = json.loads((directory / "appearance.json").read_text())
+                self.assertEqual(saved["rotations"], {"front": rotation, "back": 270})
+            before = (directory / "appearance.json").read_bytes()
+            for bad in (None, True, -90, 45, 360, "90", 90.0):
+                with self.subTest(rotation=bad):
+                    self.assertNotEqual(apply(cameraId="front", rotation=bad).returncode, 0)
+                    self.assertEqual((directory / "appearance.json").read_bytes(), before)
+            for bad_id in (None, "", [], "x" * 65):
+                with self.subTest(cameraId=bad_id):
+                    self.assertNotEqual(apply(cameraId=bad_id, rotation=90).returncode, 0)
+                    self.assertEqual((directory / "appearance.json").read_bytes(), before)
+
     def test_overlay_defaults_and_validates_choices(self):
         old = dict(style="original", strength=35, pixelSize=3)
         self.assertEqual(validate_appearance(old), dict(old, overlay="default"))

@@ -52,11 +52,12 @@ ShellRoot {
         interval: 1000; running: true
         onTriggered: {
             try {
-                if (Quickshell.env("CAMERA_TEST_BENCHMARK") === "1") probe.runVideoStyles(true)
+                if (Quickshell.env("CAMERA_TEST_ROTATION_ONLY") === "1") probe.runRotation()
+                else if (Quickshell.env("CAMERA_TEST_BENCHMARK") === "1") probe.runVideoStyles(true)
                 else {
                     probe.runAppearance(); probe.runOverlayPixels(); probe.runEffectPixels(); probe.runDrag()
                     if (Quickshell.env("CAMERA_TEST_UI_ONLY") !== "1") { probe.runVideoStyles(false); probe.runReconnect() }
-                    probe.runProfiles()
+                    probe.runProfiles(); probe.runRotation()
                 }
                 console.log("CAMERA_CHECKS_PASSED")
             }
@@ -103,8 +104,8 @@ ShellRoot {
             }
             return null
         }
-        function capture(item, name) {
-            var directory = Quickshell.env("CAMERA_TEST_CAPTURE_DIR")
+        function capture(item, name, directory) {
+            directory = directory || Quickshell.env("CAMERA_TEST_CAPTURE_DIR")
             if (!directory) return
             var complete = false
             assertOk(item.grabToImage(function(result) {
@@ -205,6 +206,99 @@ ShellRoot {
             panel.open(); panel.close(); panel.open()
             assertOk(panel.configuring, "camera setup remains available when no cameras exist")
             console.log("PASS: profile form, dropdown switching, rename, duplicate handling, persistence, deletion")
+        }
+        function runRotation() {
+            panel.open(); panel.pinned = true
+            var popup = find(panel, function(i) { return i.cardOrigin !== undefined })
+            var content = popup.contentItem[0]
+            parent = content
+            function field(name) { return find(content, function(i) { return i.objectName === name }) }
+            function add(name) {
+                panel.editSettings(true)
+                field("cameraName").text = name
+                field("cameraAddress").text = "rtsp://127.0.0.1:1/rotation"
+                panel.submitProfile()
+                eventually(function() { return !panel.configuring }, 4000)
+                return panel.selectedCameraId
+            }
+            var first = add("Rotate front"), second = add("Rotate back")
+            var effect = field("videoEffect"), video = effect.sourceItem
+            var overlay = field("videoOverlay")
+            panel.viewerWidth = 860; panel.viewerHeight = 680
+            panel.config = {url: Qt.resolvedUrl("rotation.mp4").toString(), username: "", password: ""}
+            panel.play()
+            eventually(function() { return panel.live }, 5000)
+            panel.toggleAppearance()
+            var rotation = field("videoRotation")
+            assertOk(rotation !== null, "appearance editor offers per-camera rotation")
+            equal(video.orientation, 0, "existing cameras default to zero rotation")
+            field("overlayStyle").currentIndex = 0
+            field("tintStrength").value = 35
+            var corners = [["r","g","b","w"], ["b","r","w","g"],
+                           ["w","b","g","r"], ["g","w","r","b"]]
+            for (var style = 0; style < 4; style++) {
+                field("videoStyle").currentIndex = style
+                for (var index = 0; index < 4; index++) {
+                    rotation.currentIndex = index
+                    wait(300)
+                    var rect = video.contentRect
+                    assertOk(Math.abs(rect.width / rect.height - (index % 2 ? 0.75 : 4/3)) < 0.02,
+                        "rotation preserves video proportions")
+                    var name = "rotation-" + style + "-" + index
+                    // QtTest's window grab is offset for this layer-shell popup.
+                    // Item capture includes the whole feed; the Python runner checks its pixels.
+                    capture(effect.parent, name, Quickshell.env("CAMERA_TEST_ROTATION_DIR"))
+                    var points = []
+                    for (var corner = 0; corner < 4; corner++) {
+                        points.push([Math.floor(video.x + rect.x + rect.width * (corner % 2 ? 0.75 : 0.25)),
+                                     Math.floor(video.y + rect.y + rect.height * (corner < 2 ? 0.25 : 0.75))])
+                    }
+                    console.log("ROTATION_PIXELS " + JSON.stringify({name: name, points: points, expected: corners[index]}))
+                    equal(overlay.rotation, 0, "overlay remains upright")
+                }
+            }
+            rotation.currentIndex = 1
+            capture(content, "rotation-preview")
+            var restored = newPanel.createObject(barWindow.contentItem)
+            eventually(function() { return restored.selectedCameraId === second }, 4000)
+            equal(restored.videoRotation, 0, "preview remains local before Apply")
+            mouseClick(field("applyStyle"))
+            eventually(function() { return !panel.editingAppearance && restored.videoRotation === 90 }, 4000)
+            equal(video.orientation, 90, "Apply keeps the rotation")
+            for (var size of [[860,440], [420,650]]) {
+                panel.viewerWidth = size[0]; panel.viewerHeight = size[1]; wait(150)
+                for (var name of ["audioButton", "themeButton"]) {
+                    var button = field(name), point = button.mapToItem(overlay, 0, 0)
+                    assertOk(point.x >= 0 && point.y >= 0 && point.x + button.width <= overlay.width + 1
+                        && point.y + button.height <= overlay.height + 1, "controls fit rotated feed after resize")
+                }
+            }
+            panel.toggleAppearance(); rotation.currentIndex = 2; panel.toggleAppearance()
+            equal(video.orientation, 90, "closing the editor cancels the draft")
+            panel.toggleAppearance(); rotation.currentIndex = 2; panel.close(); panel.open(); panel.pinned = true
+            equal(video.orientation, 90, "closing the viewer cancels the draft")
+            panel.toggleAppearance(); rotation.currentIndex = 2; panel.editSettings(); panel.configuring = false
+            equal(video.orientation, 90, "opening Config cancels the draft")
+            panel.toggleAppearance(); rotation.currentIndex = 2
+            panel.selectCamera(0)
+            eventually(function() { return panel.selectedCameraId === first }, 4000)
+            assertOk(!panel.editingAppearance, "switching cameras discards the draft")
+            equal(video.orientation, 0, "another camera keeps its own rotation")
+            panel.toggleAppearance(); rotation.currentIndex = 3
+            mouseClick(field("applyStyle"))
+            eventually(function() { return !panel.editingAppearance }, 4000)
+            panel.selectCamera(1)
+            eventually(function() { return panel.selectedCameraId === second }, 4000)
+            equal(video.orientation, 90, "switching back restores the camera rotation")
+            panel.editSettings(); field("cameraName").text = "Rotated back"; panel.submitProfile()
+            eventually(function() { return !panel.configuring }, 4000)
+            equal(video.orientation, 90, "renaming keeps rotation by stable camera ID")
+            restored.destroy()
+            restored = newPanel.createObject(barWindow.contentItem)
+            eventually(function() { return restored.selectedCameraId === second && restored.videoRotation === 90 }, 4000)
+            restored.destroy()
+            panel.close()
+            console.log("PASS: rotation pixels in all styles, preview/cancel/apply, per-camera persistence, rename, switching, resize")
         }
         function runAppearance() {
             panel.config = {url: Qt.resolvedUrl("sample.mp4").toString(), username: "", password: ""}
