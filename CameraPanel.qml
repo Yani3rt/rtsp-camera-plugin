@@ -17,6 +17,10 @@ Panel {
     property bool configuring: true
     // Automatic setup while FileView loads is not an explicit Config request.
     property bool settingsRequested: false
+    // No native editors during the initial asynchronous saved-profile read.
+    property bool libraryLoaded: false
+    property bool firstRunConfirmed: false
+    property var settingsDraft: ({name: "Camera 1", url: "rtsp://", username: "", password: ""})
     property bool pinned: false
     // Set by Widget for detached pins; standalone panels remain selectable.
     property string fixedCameraId: ""
@@ -83,14 +87,14 @@ Panel {
         settingsRequested = automatic !== true
         editingAppearance = false
         editingCameraId = newCamera === true ? "" : selectedCameraId
-        cameraName.text = newCamera === true ? "" : selectedCameraIndex >= 0 ? cameras[selectedCameraIndex].name : "Camera 1"
-        address.text = newCamera === true ? "rtsp://" : config.url
-        username.text = newCamera === true ? "" : config.username
-        password.text = newCamera === true ? "" : config.password
+        settingsDraft = {name: newCamera === true ? "" : selectedCameraIndex >= 0 ? cameras[selectedCameraIndex].name : "Camera 1",
+            url: newCamera === true ? "rtsp://" : config.url,
+            username: newCamera === true ? "" : config.username,
+            password: newCamera === true ? "" : config.password}
         deleteArmed = false
         message = ""
         configuring = true
-        cameraName.forceActiveFocus()
+        if (settingsLoader.item) settingsLoader.item.populate()
     }
     function toggleAppearance() {
         if (appearanceWriter.running) return
@@ -162,6 +166,8 @@ Panel {
         selectedCameraId = viewerId
         config = selected || {url: "rtsp://", username: "", password: ""}
         configured = !!selected
+        firstRunConfirmed = cameras.length === 0
+        libraryLoaded = true
         if (!opened || !configured || !settingsRequested) configuring = !configured
         if (changed) cameraAudio.muted = true
         if (changed && wasStreaming && streaming) play()
@@ -191,8 +197,10 @@ Panel {
         runProfileOperation({action: "select", id: cameras[index].id})
     }
     function submitProfile() {
-        runProfileOperation({action: "save", camera: {id: editingCameraId, name: cameraName.text,
-            url: address.text, username: username.text, password: password.text}})
+        if (!settingsLoader.item) return
+        runProfileOperation({action: "save", camera: {id: editingCameraId,
+            name: settingsLoader.item.nameText, url: settingsLoader.item.addressText,
+            username: settingsLoader.item.usernameText, password: settingsLoader.item.passwordText}})
     }
     function streamUrl() {
         var url = config.url
@@ -320,6 +328,8 @@ Panel {
     }
     onOpenedChanged: {
         if (!opened) {
+            settingsRequested = false
+            settingsDraft = {name: "", url: "rtsp://", username: "", password: ""}
             editingAppearance = false
             writer.stayInSettings = false
             pinned = false
@@ -331,7 +341,7 @@ Panel {
         if (opened) {
             settingsRequested = false
             configuring = !configured
-            if (configuring) editSettings(false, true)
+            if (configuring && libraryLoaded) editSettings(false, true)
         }
     }
 
@@ -501,14 +511,18 @@ Panel {
             try {
                 root.applyLibrary(JSON.parse(text()))
             } catch (error) {
+                root.firstRunConfirmed = false
                 root.configured = false
                 root.configuring = true
-                root.message = "Saved settings could not be read. Enter them again to repair the file."
+                root.message = "Saved settings could not be read. Open Config to repair the file."
             }
         }
-        onLoadFailed: {
+        onLoadFailed: function(error) {
+            root.firstRunConfirmed = error === FileViewError.FileNotFound
+            root.libraryLoaded = true
             root.configured = false
             root.configuring = true
+            if (!root.firstRunConfirmed) root.message = "Saved settings could not be read. Open Config to repair the file."
         }
     }
     Process {
@@ -528,7 +542,7 @@ Panel {
             catch (error) { root.message = "Saved camera profiles could not be read."; return }
             root.message = ""
             root.configuring = stayInSettings || !root.configured
-            password.text = ""
+            root.settingsDraft = {name: "", url: "rtsp://", username: "", password: ""}
             root.deleteArmed = false
             if (!root.configured) root.editSettings(true)
             else if (stayInSettings) root.editSettings()
@@ -1176,92 +1190,121 @@ Panel {
                             }
                         }
                     }
-                    Controls.ScrollView {
-                        id: settingsScroll
-                        clip: true
-                        enabled: !writer.running
-                        opacity: popup.chromeOpacity
-                        contentWidth: availableWidth
-                        Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
-                        ColumnLayout {
-                            width: settingsScroll.availableWidth
-                            spacing: 8
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Label { text: "Camera name"; color: root.foreground; Layout.fillWidth: true }
-                                Controls.ToolButton {
-                                    objectName: "addCameraButton"
-                                    text: "+"
-                                    enabled: !root.fixedCameraId && !writer.running && root.cameras.length < 32
-                                    Accessible.name: "Add camera"
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "Add camera"
-                                    onClicked: root.editSettings(true)
-                                    contentItem: Text { text: parent.text; color: Color.popups.text; font.pixelSize: 22; horizontalAlignment: Text.AlignHCenter }
-                                }
+                    Loader {
+                        id: settingsLoader
+                        active: root.opened && root.configuring && (root.settingsRequested || root.firstRunConfirmed)
+                        onLoaded: item.populate()
+                        Label {
+                            anchors.centerIn: parent
+                            width: parent.width
+                            visible: !settingsLoader.active
+                            text: root.message || "Loading camera profiles…"
+                            color: root.foreground
+                            wrapMode: Text.WordWrap
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                        sourceComponent: Controls.ScrollView {
+                            id: settingsScroll
+                            property alias nameText: cameraName.text
+                            property alias addressText: address.text
+                            property alias usernameText: username.text
+                            property alias passwordText: password.text
+                            function populate() {
+                                cameraName.text = root.settingsDraft.name
+                                address.text = root.settingsDraft.url
+                                username.text = root.settingsDraft.username
+                                password.text = root.settingsDraft.password
+                                cameraName.forceActiveFocus()
                             }
-                            TextField {
-                                id: cameraName
-                                objectName: "cameraName"
-                                Layout.fillWidth: true
-                                placeholderText: "Front door"
-                                maximumLength: 64
-                                selectByMouse: true
-                                Accessible.name: "Camera name"
-                            }
-                            Label { text: "RTSP address"; color: root.foreground }
-                            TextField {
-                                id: address
-                                objectName: "cameraAddress"
-                                Layout.fillWidth: true
-                                text: root.config.url
-                                placeholderText: "rtsp://camera-ip:554/stream"
-                                selectByMouse: true
-                                Accessible.name: "RTSP address"
-                            }
-                            Label { text: "Username"; color: root.foreground }
-                            TextField {
-                                id: username
-                                objectName: "cameraUsername"
-                                Layout.fillWidth: true
-                                selectByMouse: true
-                                Accessible.name: "Username"
-                            }
-                            Label { text: "Password"; color: root.foreground }
-                            TextField {
-                                id: password
-                                objectName: "cameraPassword"
-                                Layout.fillWidth: true
-                                echoMode: TextInput.Password
-                                selectByMouse: true
-                                Accessible.name: "Password"
-                            }
-                            Label {
-                                text: root.message || "Saved locally in a file readable only by your user account."
-                                color: root.message ? "#f38ba8" : root.foreground
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                font.pixelSize: 12
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Button {
-                                    text: root.deleteArmed ? "Confirm delete" : "Delete"
-                                    visible: root.editingCameraId !== ""
-                                    onClicked: {
-                                        if (root.deleteArmed) root.runProfileOperation({action: "delete", id: root.editingCameraId})
-                                        else root.deleteArmed = true
+                            clip: true
+                            enabled: !writer.running
+                            opacity: popup.chromeOpacity
+                            contentWidth: availableWidth
+                            Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
+                            ColumnLayout {
+                                width: settingsScroll.availableWidth
+                                spacing: 8
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label { text: "Camera name"; color: root.foreground; Layout.fillWidth: true }
+                                    Controls.ToolButton {
+                                        objectName: "addCameraButton"
+                                        text: "+"
+                                        enabled: !root.fixedCameraId && !writer.running && root.cameras.length < 32
+                                        Accessible.name: "Add camera"
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: "Add camera"
+                                        onClicked: root.editSettings(true)
+                                        contentItem: Text { text: parent.text; color: Color.popups.text; font.pixelSize: 22; horizontalAlignment: Text.AlignHCenter }
                                     }
                                 }
-                                Item { Layout.fillWidth: true }
-                                Button {
-                                    text: "Cancel"
-                                    visible: root.configured
-                                    onClicked: { password.text = ""; root.configuring = false }
+                                TextField {
+                                    id: cameraName
+                                    objectName: "cameraName"
+                                    Layout.fillWidth: true
+                                    placeholderText: "Front door"
+                                    maximumLength: 64
+                                    selectByMouse: true
+                                    Accessible.name: "Camera name"
                                 }
-                                Button {
-                                    text: writer.running ? "Saving…" : "Save & connect"
-                                    onClicked: root.submitProfile()
+                                Label { text: "RTSP address"; color: root.foreground }
+                                TextField {
+                                    id: address
+                                    objectName: "cameraAddress"
+                                    Layout.fillWidth: true
+                                    text: root.config.url
+                                    placeholderText: "rtsp://camera-ip:554/stream"
+                                    selectByMouse: true
+                                    Accessible.name: "RTSP address"
+                                }
+                                Label { text: "Username"; color: root.foreground }
+                                TextField {
+                                    id: username
+                                    objectName: "cameraUsername"
+                                    Layout.fillWidth: true
+                                    selectByMouse: true
+                                    Accessible.name: "Username"
+                                }
+                                Label { text: "Password"; color: root.foreground }
+                                TextField {
+                                    id: password
+                                    objectName: "cameraPassword"
+                                    Layout.fillWidth: true
+                                    echoMode: TextInput.Password
+                                    selectByMouse: true
+                                    Accessible.name: "Password"
+                                }
+                                Label {
+                                    text: root.message || "Saved locally in a file readable only by your user account."
+                                    color: root.message ? "#f38ba8" : root.foreground
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 12
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Button {
+                                        text: root.deleteArmed ? "Confirm delete" : "Delete"
+                                        visible: root.editingCameraId !== ""
+                                        onClicked: {
+                                            if (root.deleteArmed) root.runProfileOperation({action: "delete", id: root.editingCameraId})
+                                            else root.deleteArmed = true
+                                        }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Button {
+                                        text: "Cancel"
+                                        visible: root.configured
+                                        onClicked: {
+                                            root.configuring = false
+                                            root.settingsRequested = false
+                                            root.settingsDraft = {name: "", url: "rtsp://", username: "", password: ""}
+                                        }
+                                    }
+                                    Button {
+                                        text: writer.running ? "Saving…" : "Save & connect"
+                                        onClicked: root.submitProfile()
+                                    }
                                 }
                             }
                         }

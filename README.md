@@ -204,6 +204,32 @@ generic playback errors; avoid enabling Qt/FFmpeg debug logging with real
 credentials, since the backend may log stream URLs. RTSP itself is not
 encrypted; use RTSPS if supported by the camera.
 
+## Clipboard security: partial lifecycle mitigation
+
+The connection form is created lazily only for explicit **Config**, or after an
+asynchronous settings read confirms a missing file or an empty camera library.
+There are no editable native TextFields while viewing a saved camera, while the
+initial saved-profile read is pending, or while closed. Cancel, successful save,
+and close destroy the form; validation errors keep its draft available. A damaged
+or unreadable settings file requires explicit **Config** to open its repair form.
+
+**This is not a Qt vulnerability fix.** A safe, isolated offscreen probe confirmed
+that the locally tested Qt **6.11.2** retrieves clipboard text implicitly when a
+hidden editable TextInput receives a clipboard-change notification. A malicious
+clipboard provider can supply excessive data or stall retrieval; hiding a native
+field is not enough. The lazy form removes these four fields from the viewer's
+object lifecycle but **Config and first-run setup remain exposed on unpatched Qt**.
+
+Use a Qt Declarative package containing upstream commit
+[`bcbfae6761016974d9185cecee333b5f7aaf0442`](https://code.qt.io/cgit/qt/qtdeclarative.git/commit/?id=bcbfae6761016974d9185cecee333b5f7aaf0442)
+(or an equivalent distribution backport). It changes the implicit `canPaste`
+check from reading clipboard `text()` to querying `hasText()`. Verify the package's
+patch status rather than assuming a version number is safe. Neither this plugin
+mitigation nor that change adds global clipboard byte/deadline bounds:
+**explicit paste can still retrieve unbounded clipboard data**. Do not treat the
+Loader or the lifecycle tests as proof of complete exploit prevention. No hostile
+clipboard provider was exercised against the live desktop.
+
 ## Verify
 
 ```sh
@@ -218,6 +244,14 @@ and generated video, without reading the saved camera credentials:
 ```sh
 python3 tests/run_qml_checks.py
 ```
+
+Use `python3 tests/run_qml_checks.py --lifecycle-only` for native editor object
+lifecycle checks through the production Widget: saved-profile open before and
+after the asynchronous read, Config focus/keyboard traversal and password masking,
+draft preservation, validation failure, Cancel, save, Add, close, missing/empty
+first-run libraries, and explicit repair of invalid settings. The default full
+suite includes these checks. They count real instantiated editable controls,
+including hidden ones; they are not a Qt patch test or a full clipboard exploit test.
 
 For layout-only changes, use `python3 tests/run_qml_checks.py --ui-only` to skip
 the playback recovery checks. This still checks rendered effect pixels, live palette

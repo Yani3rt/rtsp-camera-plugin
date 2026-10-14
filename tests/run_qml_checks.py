@@ -43,6 +43,11 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
         "drawbox=x=160:y=120:w=160:h=120:color=white:t=fill",
         "-t", "30", "-c:v", "mpeg4", str(work / "rotation.mp4")
     ], check=True)
+    if "--lifecycle-only" in sys.argv[1:]:
+        environment["CAMERA_TEST_LIFECYCLE_ONLY"] = "1"
+        (work / "config" / "rtsp-camera" / "config.json").write_text(json.dumps(dict(
+            version=2, selectedId="lifecycle", cameras=[dict(id="lifecycle", name="Lifecycle",
+                url="rtsp://127.0.0.1:1/lifecycle", username="", password="")])))
     if "--pin-only" in sys.argv[1:]:
         environment["CAMERA_TEST_PIN_ONLY"] = "1"
     legacy = {}
@@ -110,6 +115,23 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
                        "b": b > r + 30 and b > g + 30, "w": min(r, g, b) > 120}
             assert matches[expected], (sample["name"], expected, (r, g, b))
         checked += 1
-    if "--benchmark" not in sys.argv[1:] and "--pin-only" not in sys.argv[1:]:
+    if not any(flag in sys.argv[1:] for flag in ("--benchmark", "--pin-only", "--lifecycle-only")):
         assert checked == 16, f"Expected 16 rotation/style captures, got {checked}"
         print("PASS: all 16 rendered rotation/style pixel checks")
+    # Include the lifecycle regression in the default suite, and exercise the
+    # missing-file first-run path in a separate fresh shell as well.
+    full_suite = not sys.argv[1:]
+    if full_suite or "--lifecycle-only" in sys.argv[1:]:
+        library_path = work / "config" / "rtsp-camera" / "config.json"
+        for mode in (("1", "missing") if full_suite else ("missing",)):
+            if mode == "1":
+                library_path.write_text(json.dumps(dict(version=2, selectedId="lifecycle", cameras=[dict(
+                    id="lifecycle", name="Lifecycle", url="rtsp://127.0.0.1:1/lifecycle", username="", password="")])))
+            else:
+                library_path.unlink(missing_ok=True)
+            lifecycle = subprocess.run(["quickshell", "-p", str(work), "--no-color"],
+                env=dict(environment, CAMERA_TEST_LIFECYCLE_ONLY=mode),
+                capture_output=True, text=True, timeout=20)
+            lifecycle_output = lifecycle.stdout + lifecycle.stderr
+            print(lifecycle_output)
+            assert lifecycle.returncode == 0 and "CAMERA_CHECKS_PASSED" in lifecycle_output and "CAMERA_CHECKS_FAILED" not in lifecycle_output

@@ -62,7 +62,9 @@ ShellRoot {
         interval: 1000; running: true
         onTriggered: {
             try {
-                if (Quickshell.env("CAMERA_TEST_GEOMETRY_RESTART")) probe.runGeometryRestart()
+                if (Quickshell.env("CAMERA_TEST_LIFECYCLE_ONLY") === "missing") probe.runMissingEditorLifecycle()
+                else if (Quickshell.env("CAMERA_TEST_LIFECYCLE_ONLY") === "1") probe.runEditorLifecycle()
+                else if (Quickshell.env("CAMERA_TEST_GEOMETRY_RESTART")) probe.runGeometryRestart()
                 else if (Quickshell.env("CAMERA_TEST_PIN_ONLY") === "1") { probe.runMultiPin(); probe.runFreshSelection(); probe.runGeometry() }
                 else if (Quickshell.env("CAMERA_TEST_ROTATION_ONLY") === "1") probe.runRotation()
                 else if (Quickshell.env("CAMERA_TEST_BENCHMARK") === "1") probe.runVideoStyles(true)
@@ -127,6 +129,84 @@ ShellRoot {
                 complete = true
             }, Qt.size(Math.round(item.width), Math.round(item.height))), "request visual capture")
             eventually(function() { return complete }, 2000)
+        }
+        function editorCount(viewer) {
+            var seen = [], count = 0
+            function visit(item) {
+                if (!item || seen.indexOf(item) >= 0) return
+                seen.push(item)
+                // Count live native editable controls, including invisible ones.
+                // Check property presence without invoking canPaste's clipboard-reading getter.
+                if ("echoMode" in item && "canPaste" in item) count++
+                var children = item.data || item.children || []
+                for (var i = 0; i < children.length; i++) visit(children[i])
+                if (item.item && typeof item.item === "object") visit(item.item)
+            }
+            visit(viewer)
+            return count
+        }
+        function runEditorLifecycle() {
+            widget.open()
+            var viewer = widget.panel
+            equal(editorCount(viewer), 0, "saved Widget open before asynchronous profiles: no editor objects")
+            eventually(function() { return viewer.cameras.length === 1 }, 4000)
+            equal(editorCount(viewer), 0, "saved viewer has no hidden editors")
+            viewer.editSettings()
+            equal(editorCount(viewer), 4, "explicit Config creates four native fields")
+            parent = find(viewer, function(i) { return i.cardOrigin !== undefined }).contentItem[0]
+            var nameField = find(viewer, function(i) { return i.objectName === "cameraName" })
+            eventually(function() { return nameField.activeFocus }, 1000)
+            keyClick(Qt.Key_Tab)
+            assertOk(find(viewer, function(i) { return i.objectName === "cameraAddress" }).activeFocus, "keyboard Tab reaches address")
+            equal(find(viewer, function(i) { return i.objectName === "cameraPassword" }).echoMode, TextInput.Password, "password stays masked")
+            find(viewer, function(i) { return i.objectName === "cameraName" }).text = "Lifecycle draft"
+            viewer.applyLibrary({version: 2, selectedId: "lifecycle", cameras: [{id: "lifecycle", name: "Reloaded",
+                url: "rtsp://127.0.0.1:1/lifecycle", username: "", password: ""}]})
+            equal(find(viewer, function(i) { return i.objectName === "cameraName" }).text, "Lifecycle draft", "reload keeps draft")
+            mouseClick(find(viewer, function(i) { return i.text === "Cancel" && i.clicked !== undefined }))
+            equal(editorCount(viewer), 0, "Cancel destroys fields")
+            viewer.editSettings()
+            nameField = find(viewer, function(i) { return i.objectName === "cameraName" })
+            nameField.text = ""
+            viewer.submitProfile()
+            eventually(function() { return viewer.message !== "" && viewer.canDispose }, 4000)
+            equal(editorCount(viewer), 4, "save validation error retains editors and draft")
+            nameField.text = "Lifecycle saved"
+            viewer.submitProfile()
+            eventually(function() { return !viewer.configuring && viewer.canDispose }, 4000)
+            equal(editorCount(viewer), 0, "save destroys fields")
+            viewer.editSettings(true)
+            equal(editorCount(viewer), 4, "Add creates form")
+            equal(find(viewer, function(i) { return i.objectName === "cameraUsername" }).text, "", "Add clears credentials")
+            viewer.close()
+            equal(editorCount(viewer), 0, "close destroys fields immediately")
+            eventually(function() { return widget.viewers.length === 0 }, 4000)
+            panel.runProfileOperation({action: "delete", id: "lifecycle"})
+            eventually(function() { return panel.cameras.length === 0 && panel.canDispose }, 4000)
+            widget.open(); viewer = widget.panel
+            equal(editorCount(viewer), 0, "empty library still waits for asynchronous confirmation")
+            eventually(function() { return editorCount(viewer) === 4 }, 4000)
+            assertOk(viewer.configuring && !viewer.configured, "confirmed first-run shows setup")
+            var libraryFile = find(viewer, function(i) { return i.path === viewer.configPath && i.setText !== undefined })
+            libraryFile.setText("{invalid")
+            eventually(function() { return viewer.message !== "" }, 4000)
+            equal(editorCount(viewer), 0, "invalid reload is not confirmed first-run; repair requires explicit Config")
+            viewer.editSettings()
+            equal(editorCount(viewer), 4, "explicit Config can repair invalid settings")
+            viewer.close()
+            equal(editorCount(viewer), 0, "first-run close destroys fields")
+            console.log("PASS: native editor object lifecycle through production Widget, async saved/empty load, Config, draft, Cancel, save, Add, close")
+        }
+        function runMissingEditorLifecycle() {
+            widget.open()
+            var viewer = widget.panel
+            equal(editorCount(viewer), 0, "missing library waits for initial asynchronous result")
+            eventually(function() { return editorCount(viewer) === 4 }, 4000)
+            assertOk(!viewer.configured && viewer.configuring && !viewer.settingsRequested, "confirmed missing file automatically shows first-run")
+            equal(find(viewer, function(i) { return i.objectName === "cameraName" }).text, "Camera 1", "first-run retains default camera name")
+            viewer.close()
+            equal(editorCount(viewer), 0, "missing first-run close destroys fields")
+            console.log("PASS: missing-library first-run editor lifecycle")
         }
         function runMultiPin() {
             widget.open()
@@ -362,7 +442,10 @@ ShellRoot {
             eventually(function() { return widget.viewers.length === 0 }, 3000)
             // With no pins, opening must not prefer the first saved entry.
             panel.runProfileOperation({action: "select", id: secondId})
-            eventually(function() { return panel.selectedCameraId === secondId && panel.canDispose }, 4000)
+            var profileWriter = find(panel, function(i) { return i.command && i.command.indexOf("--profiles") >= 0 })
+            // This ID may already be selected by the file watcher. Check the
+            // Process directly: canDispose's binding can lag within this JS turn.
+            eventually(function() { return panel.selectedCameraId === secondId && !profileWriter.running && panel.canDispose }, 4000)
             button.triggerPress(Qt.LeftButton)
             viewer = widget.panel
             eventually(function() { return viewer.cameras.length === 3 && viewer.canDispose }, 4000)
@@ -600,7 +683,7 @@ ShellRoot {
             var selector = field("cameraSelector")
             assertOk(field("nextCameraButton") === null && field("cameraTitle") === null,
                 "standalone camera title and next button removed")
-            assertOk(selector.visible && !field("addCameraButton").visible, "main header shows selector without add button")
+            assertOk(selector.visible && field("addCameraButton") === null, "main header shows selector with no hidden settings objects")
             equal(selector.displayText, "Garage", "header selector shows current camera")
             panel.pinned = true
             mouseMove(selector, 20, selector.height / 2)
