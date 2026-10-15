@@ -1,5 +1,6 @@
 import QtQuick
 import QtTest
+import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -62,7 +63,8 @@ ShellRoot {
         interval: 1000; running: true
         onTriggered: {
             try {
-                if (Quickshell.env("CAMERA_TEST_LIFECYCLE_ONLY") === "missing") probe.runMissingEditorLifecycle()
+                if (Quickshell.env("CAMERA_TEST_CLIPBOARD_ONLY") === "1") probe.runClipboard()
+                else if (Quickshell.env("CAMERA_TEST_LIFECYCLE_ONLY") === "missing") probe.runMissingEditorLifecycle()
                 else if (Quickshell.env("CAMERA_TEST_LIFECYCLE_ONLY") === "1") probe.runEditorLifecycle()
                 else if (Quickshell.env("CAMERA_TEST_GEOMETRY_RESTART")) probe.runGeometryRestart()
                 else if (Quickshell.env("CAMERA_TEST_PIN_ONLY") === "1") { probe.runMultiPin(); probe.runFreshSelection(); probe.runGeometry() }
@@ -137,13 +139,108 @@ ShellRoot {
                 seen.push(item)
                 // Count live native editable controls, including invisible ones.
                 // Check property presence without invoking canPaste's clipboard-reading getter.
-                if ("echoMode" in item && "canPaste" in item) count++
+                if ("echoMode" in item && "canPaste" in item) {
+                    assertOk(item.readOnly, "native camera field must ALWAYS be read-only: " + item.objectName)
+                    count++
+                }
                 var children = item.data || item.children || []
                 for (var i = 0; i < children.length; i++) visit(children[i])
                 if (item.item && typeof item.item === "object") visit(item.item)
             }
             visit(viewer)
             return count
+        }
+        FileView { id: clipboardFixture; path: Quickshell.env("CAMERA_TEST_CLIPBOARD_FIXTURE"); printErrors: false; blockWrites: true }
+        function runClipboard() {
+            widget.open()
+            var viewer = widget.panel
+            eventually(function() { return viewer.libraryLoaded }, 4000)
+            viewer.editSettings()
+            equal(editorCount(viewer), 4, "all instantiated native fields read-only")
+            parent = find(viewer, function(i) { return i.cardOrigin !== undefined }).contentItem[0]
+            var field = find(viewer, function(i) { return i.objectName === "cameraUsername" })
+            var password = find(viewer, function(i) { return i.objectName === "cameraPassword" })
+            for (var target of [field, password]) {
+                target.forceActiveFocus()
+                mouseClick(target, 5, 5, Qt.RightButton)
+                equal(target.Controls.ContextMenu.menu, null, "right-click exposes no native editing actions")
+                keyClick(Qt.Key_Menu)
+                equal(target.Controls.ContextMenu.menu, null, "Menu key exposes no native editing actions")
+                keyClick(Qt.Key_F10, Qt.ShiftModifier)
+                equal(target.Controls.ContextMenu.menu, null, "Shift+F10 exposes no native editing actions")
+                assertOk(!target.pastePending, "context-menu routes never request clipboard")
+            }
+            field.forceActiveFocus()
+            field.text = "abc"; field.select(1, 2)
+            keyClick(Qt.Key_Z)
+            equal(field.text, "azc", "real keyboard replaces selected text in read-only field")
+            keyClick(Qt.Key_Backspace)
+            equal(field.text, "ac", "backspace edits locally")
+            keyClick(Qt.Key_Delete)
+            equal(field.text, "a", "delete edits locally")
+            keyClick(Qt.Key_A, Qt.ControlModifier)
+            keyClick(Qt.Key_Q)
+            equal(field.text, "q", "Ctrl+A selects for local replacement")
+            field.selectAll(); field.replaceSelection("café😀")
+            keyClick(Qt.Key_End); keyClick(Qt.Key_Backspace)
+            equal(field.text, "café", "unicode local editing deletes complete surrogate pair")
+            keyClick(Qt.Key_Home); keyClick(Qt.Key_Right, Qt.ShiftModifier); keyClick(Qt.Key_W)
+            equal(field.text, "wafé", "native read-only Home and shift-arrow selection work")
+            keyClick(Qt.Key_X, Qt.ControlModifier)
+            equal(field.text, "wafé", "cut shortcut disabled")
+            keyClick(Qt.Key_Tab)
+            assertOk(password.activeFocus, "Tab reaches password, skipping paste button")
+            keyClick(Qt.Key_S)
+            equal(password.text, "s", "password keyboard typing")
+            assertOk(password.displayText !== password.text, "password typing stays masked")
+            field.forceActiveFocus()
+            field.text = "leftRIGHT"; field.select(4, 9)
+            clipboardFixture.setText('{"mode":"small"}')
+            keyClick(Qt.Key_V, Qt.ControlModifier)
+            eventually(function() { return !field.pastePending }, 2000)
+            equal(field.text, "leftcafé", "explicit Ctrl+V inserts bounded UTF-8 at captured selection")
+            clipboardFixture.setText('{"mode":"oversize"}')
+            keyClick(Qt.Key_Insert, Qt.ShiftModifier)
+            eventually(function() { return !field.pastePending }, 2000)
+            equal(field.text, "leftcafé", "oversize never enters QML text")
+            for (var mode of ["invalid", "multiline", "timeout"]) {
+                clipboardFixture.setText(JSON.stringify({mode: mode}))
+                mouseClick(find(field, function(i) { return i.text === "Paste" && i.clicked !== undefined }))
+                eventually(function() { return !field.pastePending }, 2000)
+                equal(field.text, "leftcafé", "invalid/slow clipboard rejected before field mutation")
+            }
+            clipboardFixture.setText('{"mode":"delay"}')
+            field.requestPaste()
+            keyClick(Qt.Key_T)
+            eventually(function() { return !field.pastePending }, 2000)
+            equal(field.text, "leftcafét", "late result discarded after local edit")
+            field.requestPaste(); field.cursorPosition = 0
+            eventually(function() { return !field.pastePending }, 2000)
+            equal(field.text, "leftcafét", "late result discarded after cursor/selection change")
+            field.requestPaste()
+            var snapshot = field.pasteSnapshot
+            field.requestPaste()
+            assertOk(field.pasteSnapshot === snapshot, "at most one in-flight request per field")
+            password.forceActiveFocus()
+            eventually(function() { return !field.pastePending }, 2000)
+            equal(field.text, "leftcafét", "late result discarded after focus loss")
+            field.forceActiveFocus(); field.requestPaste()
+            viewer.editSettings(true)
+            eventually(function() { return !field.pastePending }, 2000)
+            equal(field.text, "", "late result discarded after profile draft reset")
+            var nameField = find(viewer, function(i) { return i.objectName === "cameraName" })
+            nameField.requestPaste()
+            viewer.editSettings(true)
+            eventually(function() { return !nameField.pastePending }, 2000)
+            equal(nameField.text, "", "same-value focused draft reset invalidates pending paste")
+            // Middle-click remains inert, never an explicit helper gesture.
+            field.text = "native";
+            mouseClick(field, 5, 5, Qt.MiddleButton)
+            equal(field.text, "native", "native and primary paste disabled")
+            assertOk(!field.pastePending, "middle click never requests clipboard")
+            field.requestPaste(); viewer.close()
+            equal(editorCount(viewer), 0, "destruction cancels pending paste")
+            console.log("PASS: permanent native readOnly, local real keys, masked password, bounded fake-provider paste, stale rejection and cancellation")
         }
         function runEditorLifecycle() {
             widget.open()

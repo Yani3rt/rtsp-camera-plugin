@@ -17,6 +17,7 @@ Panel {
     property bool configuring: true
     // Automatic setup while FileView loads is not an explicit Config request.
     property bool settingsRequested: false
+    property int settingsEpoch: 0
     // No native editors during the initial asynchronous saved-profile read.
     property bool libraryLoaded: false
     property bool firstRunConfirmed: false
@@ -84,6 +85,7 @@ Panel {
         && player.playbackState === MediaPlayer.PlayingState
 
     function editSettings(newCamera, automatic) {
+        settingsEpoch++
         settingsRequested = automatic !== true
         editingAppearance = false
         editingCameraId = newCamera === true ? "" : selectedCameraId
@@ -1238,7 +1240,9 @@ Panel {
                                         contentItem: Text { text: parent.text; color: Color.popups.text; font.pixelSize: 22; horizontalAlignment: Text.AlignHCenter }
                                     }
                                 }
-                                TextField {
+                                SafeTextField {
+                                    requestScope: root.settingsEpoch + ":" + root.selectedCameraId + ":" + root.editingCameraId
+                                    onPasteRejected: root.message = "Paste rejected: clipboard must be single-line UTF-8, at most 4096 bytes, and respond within one second."
                                     id: cameraName
                                     objectName: "cameraName"
                                     Layout.fillWidth: true
@@ -1248,7 +1252,9 @@ Panel {
                                     Accessible.name: "Camera name"
                                 }
                                 Label { text: "RTSP address"; color: root.foreground }
-                                TextField {
+                                SafeTextField {
+                                    requestScope: root.settingsEpoch + ":" + root.selectedCameraId + ":" + root.editingCameraId
+                                    onPasteRejected: root.message = "Paste rejected: clipboard must be single-line UTF-8, at most 4096 bytes, and respond within one second."
                                     id: address
                                     objectName: "cameraAddress"
                                     Layout.fillWidth: true
@@ -1258,7 +1264,9 @@ Panel {
                                     Accessible.name: "RTSP address"
                                 }
                                 Label { text: "Username"; color: root.foreground }
-                                TextField {
+                                SafeTextField {
+                                    requestScope: root.settingsEpoch + ":" + root.selectedCameraId + ":" + root.editingCameraId
+                                    onPasteRejected: root.message = "Paste rejected: clipboard must be single-line UTF-8, at most 4096 bytes, and respond within one second."
                                     id: username
                                     objectName: "cameraUsername"
                                     Layout.fillWidth: true
@@ -1266,7 +1274,9 @@ Panel {
                                     Accessible.name: "Username"
                                 }
                                 Label { text: "Password"; color: root.foreground }
-                                TextField {
+                                SafeTextField {
+                                    requestScope: root.settingsEpoch + ":" + root.selectedCameraId + ":" + root.editingCameraId
+                                    onPasteRejected: root.message = "Paste rejected: clipboard must be single-line UTF-8, at most 4096 bytes, and respond within one second."
                                     id: password
                                     objectName: "cameraPassword"
                                     Layout.fillWidth: true

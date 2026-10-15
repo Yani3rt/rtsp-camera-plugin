@@ -17,7 +17,13 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
     (work / "config" / "rtsp-camera").mkdir(parents=True)
     for name in ("Commons", "Ui"):
         (work / name).symlink_to(Path("/usr/share/omarchy/shell") / name)
-    (work / "Camera").symlink_to(repo)
+    camera_copy = work / "Camera"
+    shutil.copytree(repo, camera_copy, ignore=shutil.ignore_patterns('.git', '__pycache__'))
+    # Only this disposable copy uses a fixed fixture, never the real clipboard.
+    shutil.copy2(repo / 'clipboard.py', camera_copy / 'bounded_original.py')
+    shutil.copy2(repo / 'tests/clipboard_fixture.py', camera_copy / 'clipboard.py')
+    clipboard_fixture = work / 'clipboard-fixture.json'
+    clipboard_fixture.write_text('{"mode":"small"}')
     shutil.copy2(repo / "tests/CameraChecks.qml", work / "shell.qml")
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
@@ -43,6 +49,9 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
         "drawbox=x=160:y=120:w=160:h=120:color=white:t=fill",
         "-t", "30", "-c:v", "mpeg4", str(work / "rotation.mp4")
     ], check=True)
+    environment['CAMERA_TEST_CLIPBOARD_FIXTURE'] = str(clipboard_fixture)
+    if '--clipboard-only' in sys.argv[1:]:
+        environment['CAMERA_TEST_CLIPBOARD_ONLY'] = '1'
     if "--lifecycle-only" in sys.argv[1:]:
         environment["CAMERA_TEST_LIFECYCLE_ONLY"] = "1"
         (work / "config" / "rtsp-camera" / "config.json").write_text(json.dumps(dict(
@@ -115,12 +124,19 @@ with tempfile.TemporaryDirectory(prefix="camera-checks-") as temporary:
                        "b": b > r + 30 and b > g + 30, "w": min(r, g, b) > 120}
             assert matches[expected], (sample["name"], expected, (r, g, b))
         checked += 1
-    if not any(flag in sys.argv[1:] for flag in ("--benchmark", "--pin-only", "--lifecycle-only")):
+    if not any(flag in sys.argv[1:] for flag in ("--benchmark", "--pin-only", "--lifecycle-only", "--clipboard-only")):
         assert checked == 16, f"Expected 16 rotation/style captures, got {checked}"
         print("PASS: all 16 rendered rotation/style pixel checks")
     # Include the lifecycle regression in the default suite, and exercise the
     # missing-file first-run path in a separate fresh shell as well.
     full_suite = not sys.argv[1:]
+    if full_suite:
+        security = subprocess.run(['quickshell', '-p', str(work), '--no-color'],
+            env=dict(environment, CAMERA_TEST_CLIPBOARD_ONLY='1'),
+            capture_output=True, text=True, timeout=20)
+        security_output = security.stdout + security.stderr
+        print(security_output)
+        assert security.returncode == 0 and 'CAMERA_CHECKS_PASSED' in security_output and 'CAMERA_CHECKS_FAILED' not in security_output
     if full_suite or "--lifecycle-only" in sys.argv[1:]:
         library_path = work / "config" / "rtsp-camera" / "config.json"
         for mode in (("1", "missing") if full_suite else ("missing",)):
